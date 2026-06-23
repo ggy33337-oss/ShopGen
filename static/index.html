@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>基于多模态大模型的电商海报生成与文案协作系统</title>
+  <link rel="stylesheet" href="/static/styles.css?v=202606221620">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar" id="historyDrawer" aria-label="会话历史">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-mark">AI</span>
+          <div>
+            <strong>海报协作系统</strong>
+            <span>多模态图文生成</span>
+          </div>
+        </div>
+        <button class="icon-button close-sidebar-button" id="closeHistoryButton" type="button" aria-label="关闭历史">×</button>
+      </div>
+      <button class="new-session-button" id="newChatButton" type="button">新建会话</button>
+      <input id="conversationSearch" class="conversation-search" type="search" placeholder="搜索会话">
+      <div class="history-section-label">历史会话</div>
+      <div class="conversation-list" id="conversationList"></div>
+    </aside>
+    <div class="drawer-mask" id="drawerMask"></div>
+
+    <section class="workspace">
+      <header class="topbar">
+        <button class="icon-button menu-button" id="openHistoryButton" type="button" aria-label="打开会话历史">
+          <span></span>
+          <span></span>
+        </button>
+        <div class="topbar-title">
+          <h1>电商海报生成与文案协作系统</h1>
+          <p id="currentConversationTitle">默认会话</p>
+        </div>
+      </header>
+
+      <section class="chat-panel" id="chatPanel" aria-live="polite"></section>
+
+      <form class="composer" id="chatForm">
+        <div class="composer-main">
+          <div class="attachment-row" id="attachmentRow" hidden>
+            <span class="attachment-type" id="attachmentType">文件</span>
+            <span class="attachment-name" id="attachmentName"></span>
+            <button class="attachment-remove" id="removeAttachmentButton" type="button" aria-label="移除附件">×</button>
+          </div>
+          <textarea
+            id="messageInput"
+            name="message"
+            rows="2"
+            placeholder="发消息，也可以粘贴图片或添加参考资料"
+            autocomplete="off"
+          ></textarea>
+          <div class="composer-tools">
+            <label class="reference-button" for="fileInput">
+              <span class="reference-icon">＋</span>
+              <span>添加参考资料</span>
+            </label>
+            <span class="paste-hint">支持 Ctrl+V 粘贴图片，仅用于本次生成</span>
+          </div>
+        </div>
+        <input
+          id="fileInput"
+          class="file-input"
+          type="file"
+          accept=".png,.jpg,.jpeg,.pdf,.docx,image/png,image/jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        >
+        <button class="send-button" type="submit" id="sendButton">发送</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v=202606230040"></script>
+</body>
+</html>

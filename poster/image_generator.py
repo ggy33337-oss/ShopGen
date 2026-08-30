@@ -1,4 +1,6 @@
-﻿from llm.openai_client import generate_image
+# -*- coding: utf-8 -*-
+
+from llm.qwen_client import QwenGateway
 from poster.models.generation import FinalPromptResult, ImageGenerationResult
 
 
@@ -17,5 +19,5 @@ def extract_image_url(response):
 
 
 def generate_poster_image(values, final_prompt: FinalPromptResult):
-    response = generate_image(values, final_prompt.final_prompt)
-    return ImageGenerationResult(image_url=extract_image_url(response))
+    image_url = QwenGateway(values).generate_image(final_prompt.final_prompt)
+    return ImageGenerationResult(image_url=image_url)

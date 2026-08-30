@@ -1,4 +1,6 @@
-﻿from poster.models.copywriting import CopywritingResult
+# -*- coding: utf-8 -*-
+
+from poster.models.copywriting import CopywritingResult
 from poster.models.generation import ImageGenerationResult
 from poster.models.poster_schema import PosterSchema
 from poster.models.response import PosterPayload

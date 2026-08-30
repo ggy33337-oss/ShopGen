@@ -1,4 +1,6 @@
-﻿from typing import Any
+# -*- coding: utf-8 -*-
+
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,6 +13,9 @@ class PosterGenerationRequest(BaseModel):
     file_name: str | None = None
     file_content_type: str = ""
     file_content: bytes | None = None
+    file_names: list[str] = Field(default_factory=list)
+    file_content_types: list[str] = Field(default_factory=list)
+    file_contents: list[bytes] = Field(default_factory=list)
     poster_type: str = Field(default="商业海报", max_length=MAX_SHORT_TEXT_LENGTH)
     campaign: str = Field(default="", max_length=MAX_TEXT_LENGTH)
     target_audience: str = Field(default="", max_length=MAX_SHORT_TEXT_LENGTH)

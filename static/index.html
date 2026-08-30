@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>基于多模态大模型的电商海报生成与文案协作系统</title>
-  <link rel="stylesheet" href="/static/styles.css?v=202606221620">
+  <link rel="stylesheet" href="/static/styles.css?v=202608311230">
 </head>
 <body>
   <main class="app-shell">
@@ -23,6 +23,15 @@
       <input id="conversationSearch" class="conversation-search" type="search" placeholder="搜索会话">
       <div class="history-section-label">历史会话</div>
       <div class="conversation-list" id="conversationList"></div>
+      <div class="sidebar-footer">
+        <button class="knowledge-entry-button" id="openKnowledgeButton" type="button">
+          <span class="knowledge-entry-icon" aria-hidden="true">＋</span>
+          <span>
+            <strong>知识库资料</strong>
+            <small id="knowledgeEntryMeta">0 项资料</small>
+          </span>
+        </button>
+      </div>
     </aside>
     <div class="drawer-mask" id="drawerMask"></div>
 
@@ -43,21 +52,19 @@
       <form class="composer" id="chatForm">
         <div class="composer-main">
           <div class="attachment-row" id="attachmentRow" hidden>
-            <span class="attachment-type" id="attachmentType">文件</span>
-            <span class="attachment-name" id="attachmentName"></span>
-            <button class="attachment-remove" id="removeAttachmentButton" type="button" aria-label="移除附件">×</button>
+            <div class="attachment-list" id="attachmentList"></div>
           </div>
           <textarea
             id="messageInput"
             name="message"
             rows="2"
-            placeholder="发消息，也可以粘贴图片或添加参考资料"
+            placeholder="发消息，也可以粘贴图片或添加本轮参考资料"
             autocomplete="off"
           ></textarea>
           <div class="composer-tools">
             <label class="reference-button" for="fileInput">
               <span class="reference-icon">＋</span>
-              <span>添加参考资料</span>
+              <span>添加本轮参考资料</span>
             </label>
             <span class="paste-hint">支持 Ctrl+V 粘贴图片，仅用于本次生成</span>
           </div>
@@ -66,6 +73,7 @@
           id="fileInput"
           class="file-input"
           type="file"
+          multiple
           accept=".png,.jpg,.jpeg,.pdf,.docx,image/png,image/jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         >
         <button class="send-button" type="submit" id="sendButton">发送</button>
@@ -73,6 +81,64 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=202606230040"></script>
+  <section
+    class="knowledge-dialog"
+    id="knowledgeDialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="knowledgeDialogTitle"
+    hidden
+  >
+    <div class="knowledge-dialog-panel">
+      <header class="knowledge-dialog-header">
+        <div>
+          <h2 id="knowledgeDialogTitle">知识库资料</h2>
+          <p>资料管理</p>
+        </div>
+        <button class="dialog-close-button" id="closeKnowledgeButton" type="button" aria-label="关闭知识库">×</button>
+      </header>
+
+      <form class="knowledge-upload-form" id="knowledgeUploadForm">
+        <label class="knowledge-file-picker" for="knowledgeFileInput">
+          <span class="knowledge-file-icon" aria-hidden="true">＋</span>
+          <span class="knowledge-file-copy">
+            <strong id="knowledgeFileLabel">选择文档或图片</strong>
+            <small>PDF、DOCX、PNG、JPG</small>
+          </span>
+        </label>
+        <input
+          id="knowledgeFileInput"
+          class="file-input"
+          type="file"
+          accept=".png,.jpg,.jpeg,.pdf,.docx,image/png,image/jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          required
+        >
+        <div class="knowledge-fields">
+          <label>
+            <span>资料标题</span>
+            <input id="knowledgeTitleInput" type="text" maxlength="255" placeholder="默认使用文件名">
+          </label>
+          <label>
+            <span>分类</span>
+            <input id="knowledgeCategoryInput" type="text" maxlength="100" placeholder="例如：鞋服">
+          </label>
+        </div>
+        <div class="knowledge-form-actions">
+          <p class="knowledge-status" id="knowledgeStatus" aria-live="polite"></p>
+          <button class="knowledge-upload-button" id="knowledgeUploadButton" type="submit">上传入库</button>
+        </div>
+      </form>
+
+      <section class="knowledge-source-section" aria-labelledby="knowledgeSourceTitle">
+        <div class="knowledge-source-heading">
+          <h3 id="knowledgeSourceTitle">已入库资料</h3>
+          <span id="knowledgeSourceCount">0 项</span>
+        </div>
+        <div class="knowledge-source-list" id="knowledgeSourceList"></div>
+      </section>
+    </div>
+  </section>
+
+  <script src="/static/app.js?v=202608311230"></script>
 </body>
 </html>

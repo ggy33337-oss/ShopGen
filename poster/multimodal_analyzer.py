@@ -1,13 +1,11 @@
-from llm.openai_client import (
-    extract_chat_content,
-    post_dashscope_chat_completion,
-    strip_reasoning_tags,
-)
+# -*- coding: utf-8 -*-
+
+from llm.qwen_client import QwenGateway, extract_chat_content, strip_reasoning_tags
 from poster.json_parser import load_strict_json_object
 from poster.models.analysis import AnalyzerResult
 
 
-ANALYZER_MODEL_FALLBACK = "qwen-vl-plus"
+ANALYZER_MODEL_FALLBACK = "qwen3-vl-plus"
 
 
 def build_analyzer_messages(user_text, uploaded_content=None):
@@ -45,17 +43,16 @@ def build_analyzer_messages(user_text, uploaded_content=None):
 
 def analyze_multimodal(values, user_text, uploaded_content=None):
     model_name = (
-        values.get("POSTER_ANALYZER_MODEL_NAME")
-        or values.get("DASHSCOPE_VL_MODEL_NAME")
+        values.get("QWEN_VL_MODEL")
         or ANALYZER_MODEL_FALLBACK
     )
-    response = post_dashscope_chat_completion(
-        values,
-        build_analyzer_messages(user_text, uploaded_content),
-        {"temperature": 0.0, "max_tokens": 1200},
-        model_name=model_name,
+    gateway = QwenGateway(values)
+    response = gateway.chat_completion(
+        messages=build_analyzer_messages(user_text, uploaded_content),
+        model=model_name,
+        temperature=0.0,
+        max_tokens=1200,
         response_format={"type": "json_object"},
-        api_key_name="POSTER_ANALYZER_API_KEY",
         error_label="百炼多模态分析模型",
     )
     raw_content = strip_reasoning_tags(extract_chat_content(response))

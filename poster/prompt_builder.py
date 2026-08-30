@@ -1,4 +1,6 @@
-﻿import json
+# -*- coding: utf-8 -*-
+
+import json
 
 from poster.models.copywriting import CopywritingResult
 from poster.models.generation import FinalPromptResult

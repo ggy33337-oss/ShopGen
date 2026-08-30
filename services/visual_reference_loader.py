@@ -1,17 +1,20 @@
+# -*- coding: utf-8 -*-
+
 import base64
 from dataclasses import dataclass
 from urllib import parse, request
 
-from llm.openai_client import (
+from llm.qwen_client import (
+    QwenGateway,
     extract_chat_content,
     open_model_request,
-    post_dashscope_chat_completion,
     strip_reasoning_tags,
 )
+from infra.redis_image_cache import RedisImageCache, extract_image_id
 from poster.multimodal_analyzer import ANALYZER_MODEL_FALLBACK
 
 
-MAX_REFERENCE_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 REFERENCE_IMAGE_TIMEOUT = 20
 MAX_REFERENCE_IMAGES = 1
 REFERENCE_ANALYSIS_TIMEOUT = 80
@@ -57,8 +60,7 @@ def attach_visual_reference_analysis(values, user_input, visual_history, limit=M
 
 def analyze_reference_image(values, user_input, record, image_data_url, index):
     model_name = (
-        values.get("POSTER_ANALYZER_MODEL_NAME")
-        or values.get("DASHSCOPE_VL_MODEL_NAME")
+        values.get("QWEN_VL_MODEL")
         or ANALYZER_MODEL_FALLBACK
     )
     system_message = (
@@ -86,13 +88,13 @@ def analyze_reference_image(values, user_input, record, image_data_url, index):
         },
     ]
     try:
-        response = post_dashscope_chat_completion(
-            values,
-            messages,
-            {"temperature": 0.0, "max_tokens": 900},
-            model_name=model_name,
+        gateway = QwenGateway(values)
+        response = gateway.chat_completion(
+            messages=messages,
+            model=model_name,
+            temperature=0.0,
+            max_tokens=900,
             timeout=REFERENCE_ANALYSIS_TIMEOUT,
-            api_key_name="POSTER_ANALYZER_API_KEY",
             error_label="历史参考图视觉分析模型",
         )
     except Exception:
@@ -113,6 +115,16 @@ def load_reference_image(values, image_url):
     image_url = str(image_url or "").strip()
     if not image_url:
         return None
+    cached_image_id = extract_image_id(image_url)
+    if cached_image_id:
+        cached = RedisImageCache(values).get_image(cached_image_id)
+        if not cached:
+            return None
+        return ReferenceImage(
+            content=cached.content,
+            content_type=cached.content_type,
+            source_url=image_url,
+        )
     if image_url.startswith("data:image/"):
         return parse_data_url(image_url)
 

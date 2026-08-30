@@ -1,4 +1,6 @@
-﻿from typing import Any
+# -*- coding: utf-8 -*-
+
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

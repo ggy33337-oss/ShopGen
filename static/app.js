@@ -12,10 +12,21 @@ const conversationSearch = document.querySelector("#conversationSearch");
 const currentConversationTitle = document.querySelector("#currentConversationTitle");
 const fileInput = document.querySelector("#fileInput");
 const attachmentRow = document.querySelector("#attachmentRow");
-const attachmentType = document.querySelector("#attachmentType");
-const attachmentName = document.querySelector("#attachmentName");
-const removeAttachmentButton = document.querySelector("#removeAttachmentButton");
-const STORAGE_VERSION = "sqlite-v1";
+const attachmentList = document.querySelector("#attachmentList");
+const openKnowledgeButton = document.querySelector("#openKnowledgeButton");
+const closeKnowledgeButton = document.querySelector("#closeKnowledgeButton");
+const knowledgeDialog = document.querySelector("#knowledgeDialog");
+const knowledgeUploadForm = document.querySelector("#knowledgeUploadForm");
+const knowledgeFileInput = document.querySelector("#knowledgeFileInput");
+const knowledgeFileLabel = document.querySelector("#knowledgeFileLabel");
+const knowledgeTitleInput = document.querySelector("#knowledgeTitleInput");
+const knowledgeCategoryInput = document.querySelector("#knowledgeCategoryInput");
+const knowledgeUploadButton = document.querySelector("#knowledgeUploadButton");
+const knowledgeStatus = document.querySelector("#knowledgeStatus");
+const knowledgeEntryMeta = document.querySelector("#knowledgeEntryMeta");
+const knowledgeSourceCount = document.querySelector("#knowledgeSourceCount");
+const knowledgeSourceList = document.querySelector("#knowledgeSourceList");
+const STORAGE_VERSION = "mysql-redis-v2";
 const savedStorageVersion = localStorage.getItem("storage_version");
 if (savedStorageVersion !== STORAGE_VERSION) {
   localStorage.removeItem("conversation_id");
@@ -23,7 +34,8 @@ if (savedStorageVersion !== STORAGE_VERSION) {
 }
 let conversationId = localStorage.getItem("conversation_id") || "default";
 let conversationCache = [];
-let pastedAttachment = null;
+let selectedAttachments = [];
+const MAX_REFERENCE_ATTACHMENTS = 3;
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 860px)").matches;
@@ -38,6 +50,14 @@ function setBusy(isBusy) {
 
 function setNewChatBusy(isBusy) {
   newChatButton.disabled = isBusy;
+}
+
+function setKnowledgeBusy(isBusy) {
+  knowledgeFileInput.disabled = isBusy;
+  knowledgeTitleInput.disabled = isBusy;
+  knowledgeCategoryInput.disabled = isBusy;
+  knowledgeUploadButton.disabled = isBusy;
+  knowledgeUploadButton.textContent = isBusy ? "正在入库" : "上传入库";
 }
 
 function scrollToBottom() {
@@ -184,15 +204,13 @@ async function sendMessage(message) {
   return response.json();
 }
 
-async function sendPosterMessage(message, file) {
+async function sendPosterMessage(message, files) {
   const formData = new FormData();
   formData.append("message", message);
   formData.append("conversation_id", conversationId);
   formData.append("poster_type", "商业海报");
   formData.append("campaign", message);
-  if (file) {
-    formData.append("file", file);
-  }
+  files.forEach((file) => formData.append("files", file));
 
   const response = await fetch("/api/poster/generate", {
     method: "POST",
@@ -228,14 +246,101 @@ function formatPosterText(data) {
     copywriting.subheadline ? `副标题：${copywriting.subheadline}` : "",
     copywriting.cta ? `行动语：${copywriting.cta}` : "",
   ].filter(Boolean);
-  return lines.join("\n") || "已生成海报方案。";
+  return lines.join("\n") || data.metadata?.message || "已生成海报方案。";
+}
+
+async function openKnowledgeDialog() {
+  if (isMobileLayout()) {
+    closeHistory();
+  }
+  knowledgeDialog.hidden = false;
+  document.body.classList.add("dialog-open");
+  knowledgeStatus.textContent = "";
+  knowledgeStatus.className = "knowledge-status";
+  closeKnowledgeButton.focus();
+  await loadKnowledgeSources();
+}
+
+function closeKnowledgeDialog() {
+  knowledgeDialog.hidden = true;
+  document.body.classList.remove("dialog-open");
+  openKnowledgeButton.focus();
+}
+
+async function loadKnowledgeSources() {
+  knowledgeSourceList.innerHTML = '<p class="knowledge-source-empty">正在加载</p>';
+  try {
+    const response = await fetch("/api/knowledge/sources");
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response));
+    }
+    renderKnowledgeSources(await response.json());
+  } catch (error) {
+    knowledgeSourceCount.textContent = "-";
+    knowledgeEntryMeta.textContent = "暂不可用";
+    knowledgeSourceList.innerHTML = "";
+    const empty = document.createElement("p");
+    empty.className = "knowledge-source-empty";
+    empty.textContent = error.message || "资料列表加载失败";
+    knowledgeSourceList.appendChild(empty);
+  }
+}
+
+function renderKnowledgeSources(sources) {
+  knowledgeSourceList.innerHTML = "";
+  knowledgeSourceCount.textContent = `${sources.length} 项`;
+  knowledgeEntryMeta.textContent = `${sources.length} 项资料`;
+  if (!sources.length) {
+    const empty = document.createElement("p");
+    empty.className = "knowledge-source-empty";
+    empty.textContent = "暂无资料";
+    knowledgeSourceList.appendChild(empty);
+    return;
+  }
+
+  sources.forEach((source) => {
+    const item = document.createElement("div");
+    item.className = "knowledge-source-item";
+
+    const title = document.createElement("strong");
+    title.textContent = source.title || source.source_filename || "未命名资料";
+    const meta = document.createElement("span");
+    meta.textContent = [source.category || "未分类", source.source_filename || ""].filter(Boolean).join(" · ");
+    const count = document.createElement("span");
+    count.className = "knowledge-vector-count";
+    count.textContent = `${source.vector_count || 0} 条向量`;
+
+    item.appendChild(title);
+    item.appendChild(meta);
+    item.appendChild(count);
+    knowledgeSourceList.appendChild(item);
+  });
+}
+
+async function uploadKnowledgeFile(file, title, category) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("title", title);
+  formData.append("category", category);
+  const response = await fetch("/api/knowledge/upload", {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  return response.json();
 }
 
 function clearAttachment() {
   fileInput.value = "";
-  pastedAttachment = null;
-  attachmentType.textContent = "文件";
-  attachmentName.textContent = "";
+  selectedAttachments.forEach((item) => {
+    if (item.previewUrl) {
+      URL.revokeObjectURL(item.previewUrl);
+    }
+  });
+  selectedAttachments = [];
+  attachmentList.replaceChildren();
   attachmentRow.hidden = true;
 }
 
@@ -253,24 +358,70 @@ function getAttachmentType(file) {
   return "文件";
 }
 
-function updateAttachmentView() {
-  const file = fileInput.files[0];
-  if (!file) {
-    clearAttachment();
-    return;
-  }
-  pastedAttachment = null;
-  attachmentType.textContent = getAttachmentType(file);
-  attachmentName.textContent = file.name;
-  attachmentRow.hidden = false;
+function isImageFile(file) {
+  return file.type.startsWith("image/") || /\.(png|jpe?g)$/i.test(file.name);
 }
 
-function setPastedAttachment(file) {
+function removeAttachment(index) {
+  const [removed] = selectedAttachments.splice(index, 1);
+  if (removed && removed.previewUrl) {
+    URL.revokeObjectURL(removed.previewUrl);
+  }
+  renderAttachments();
+}
+
+function renderAttachments() {
+  attachmentList.replaceChildren();
+  selectedAttachments.forEach((item, index) => {
+    const tile = document.createElement("div");
+    const image = isImageFile(item.file);
+    tile.className = image ? "attachment-tile image-tile" : "attachment-tile file-tile";
+    tile.title = item.file.name;
+
+    if (image) {
+      const preview = document.createElement("img");
+      preview.src = item.previewUrl;
+      preview.alt = `本轮参考图片：${item.file.name}`;
+      tile.appendChild(preview);
+    } else {
+      const type = document.createElement("span");
+      type.className = "attachment-type";
+      type.textContent = getAttachmentType(item.file);
+      const name = document.createElement("span");
+      name.className = "attachment-name";
+      name.textContent = item.file.name;
+      tile.append(type, name);
+    }
+
+    const remove = document.createElement("button");
+    remove.className = "attachment-remove";
+    remove.type = "button";
+    remove.setAttribute("aria-label", `移除附件 ${item.file.name}`);
+    remove.textContent = "×";
+    remove.addEventListener("click", () => removeAttachment(index));
+    tile.appendChild(remove);
+    attachmentList.appendChild(tile);
+  });
+  attachmentRow.hidden = selectedAttachments.length === 0;
+}
+
+function addAttachments(files) {
+  const available = MAX_REFERENCE_ATTACHMENTS - selectedAttachments.length;
+  if (available <= 0) {
+    return;
+  }
+  files.slice(0, available).forEach((file) => {
+    selectedAttachments.push({
+      file,
+      previewUrl: isImageFile(file) ? URL.createObjectURL(file) : "",
+    });
+  });
+  renderAttachments();
+}
+
+function updateAttachmentView() {
+  addAttachments(Array.from(fileInput.files));
   fileInput.value = "";
-  pastedAttachment = file;
-  attachmentType.textContent = "粘贴图片";
-  attachmentName.textContent = file.name;
-  attachmentRow.hidden = false;
 }
 
 async function fetchConversations() {
@@ -430,6 +581,7 @@ async function initializeApp() {
   try {
     await loadConversationList();
     await switchConversation(conversationId);
+    await loadKnowledgeSources();
   } catch (error) {
     clearMessages();
     addMessage("assistant", error.message || "会话加载失败，请稍后重试。");
@@ -440,23 +592,25 @@ chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const message = messageInput.value.trim();
-  const selectedFile = pastedAttachment || fileInput.files[0];
-  if (!message && !selectedFile) {
+  const selectedFiles = selectedAttachments.map((item) => item.file);
+  if (!message && !selectedFiles.length) {
     return;
   }
 
-  const userText = selectedFile ? `${message || "请分析上传文件并生成海报"}\n附件：${selectedFile.name}` : message;
+  const userText = selectedFiles.length
+    ? `${message || "请分析上传文件并生成海报"}\n附件：${selectedFiles.map((file) => file.name).join("、")}`
+    : message;
   addMessage("user", userText);
   messageInput.value = "";
   setBusy(true);
   const loadingMessage = addLoadingMessage();
 
   try {
-    const data = selectedFile
-      ? await sendPosterMessage(message || "请分析上传文件并生成海报", selectedFile)
+    const data = selectedFiles.length
+      ? await sendPosterMessage(message || "请分析上传文件并生成海报", selectedFiles)
       : await sendMessage(message);
     removeMessage(loadingMessage);
-    if (selectedFile) {
+    if (selectedFiles.length) {
       conversationId = data.conversation_id || conversationId;
       localStorage.setItem("conversation_id", conversationId);
       const imageUrl = data.poster ? data.poster.image_url : "";
@@ -480,7 +634,50 @@ chatForm.addEventListener("submit", async (event) => {
 });
 
 fileInput.addEventListener("change", updateAttachmentView);
-removeAttachmentButton.addEventListener("click", clearAttachment);
+openKnowledgeButton.addEventListener("click", openKnowledgeDialog);
+closeKnowledgeButton.addEventListener("click", closeKnowledgeDialog);
+knowledgeFileInput.addEventListener("change", () => {
+  const file = knowledgeFileInput.files[0];
+  knowledgeFileLabel.textContent = file ? file.name : "选择文档或图片";
+  if (file && !knowledgeTitleInput.value.trim()) {
+    knowledgeTitleInput.value = file.name.replace(/\.[^.]+$/, "");
+  }
+});
+knowledgeUploadForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const file = knowledgeFileInput.files[0];
+  if (!file) {
+    knowledgeStatus.className = "knowledge-status error";
+    knowledgeStatus.textContent = "请选择需要入库的资料。";
+    return;
+  }
+
+  setKnowledgeBusy(true);
+  knowledgeStatus.className = "knowledge-status";
+  knowledgeStatus.textContent = "正在解析并向量化资料";
+  try {
+    const result = await uploadKnowledgeFile(
+      file,
+      knowledgeTitleInput.value.trim(),
+      knowledgeCategoryInput.value.trim()
+    );
+    knowledgeStatus.className = "knowledge-status success";
+    knowledgeStatus.textContent = `已入库：${result.text_vector_count} 条文本向量，${result.image_vector_count} 条图片向量。`;
+    knowledgeUploadForm.reset();
+    knowledgeFileLabel.textContent = "选择文档或图片";
+    await loadKnowledgeSources();
+  } catch (error) {
+    knowledgeStatus.className = "knowledge-status error";
+    knowledgeStatus.textContent = error.message || "资料入库失败";
+  } finally {
+    setKnowledgeBusy(false);
+  }
+});
+knowledgeDialog.addEventListener("click", (event) => {
+  if (event.target === knowledgeDialog) {
+    closeKnowledgeDialog();
+  }
+});
 messageInput.addEventListener("paste", (event) => {
   const items = event.clipboardData ? Array.from(event.clipboardData.items) : [];
   const imageItem = items.find((item) => item.type.startsWith("image/"));
@@ -499,7 +696,7 @@ messageInput.addEventListener("paste", (event) => {
     `pasted-reference-${Date.now()}.${extension}`,
     { type: file.type || "image/png" }
   );
-  setPastedAttachment(pastedFile);
+  addAttachments([pastedFile]);
 });
 
 newChatButton.addEventListener("click", async () => {
@@ -528,6 +725,12 @@ window.addEventListener("resize", () => {
   if (!isMobileLayout()) {
     historyDrawer.classList.remove("open");
     drawerMask.classList.remove("open");
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !knowledgeDialog.hidden) {
+    closeKnowledgeDialog();
   }
 });
 

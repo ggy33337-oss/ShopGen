@@ -1,4 +1,6 @@
-﻿from pydantic import BaseModel
+# -*- coding: utf-8 -*-
+
+from pydantic import BaseModel
 
 from poster.models.copywriting import Copywriting
 from poster.models.generation import ImageGenerationResult

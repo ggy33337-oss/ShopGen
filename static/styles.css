@@ -47,7 +47,7 @@ button {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   min-height: 100vh;
   padding: 22px 18px;
   border-right: 1px solid var(--line);
@@ -163,6 +163,65 @@ button {
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+body.dialog-open {
+  overflow: hidden;
+}
+
+.sidebar-footer {
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.knowledge-entry-button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  gap: 11px;
+  padding: 10px 11px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.knowledge-entry-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.knowledge-entry-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 7px;
+  background: #2563eb;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.knowledge-entry-button span:last-child {
+  min-width: 0;
+}
+
+.knowledge-entry-button strong,
+.knowledge-entry-button small {
+  display: block;
+}
+
+.knowledge-entry-button strong {
+  font-size: 14px;
+}
+
+.knowledge-entry-button small {
+  margin-top: 3px;
+  color: #9aa7bb;
+  font-size: 11px;
 }
 
 .conversation-item {
@@ -481,16 +540,48 @@ button {
 }
 
 .attachment-row {
+  display: block;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.attachment-tile {
+  position: relative;
+  min-width: 0;
+}
+
+.image-tile {
+  width: 150px;
+  height: 150px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.image-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.file-tile {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-  min-height: 32px;
-  margin-bottom: 6px;
-  padding: 5px 8px;
+  gap: 8px;
+  max-width: min(100%, 360px);
+  min-height: 34px;
+  padding: 5px 34px 5px 8px;
   border: 1px solid #c7d7fe;
-  border-radius: 10px;
+  border-radius: 9px;
   background: #f5f8ff;
   color: var(--muted);
   font-size: 13px;
@@ -510,7 +601,6 @@ button {
 }
 
 .attachment-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -576,6 +666,286 @@ textarea::placeholder {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.knowledge-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.48);
+}
+
+.knowledge-dialog[hidden] {
+  display: none;
+}
+
+.knowledge-dialog-panel {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(17, 24, 39, 0.2);
+}
+
+.knowledge-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.knowledge-dialog-header h2,
+.knowledge-dialog-header p {
+  margin: 0;
+}
+
+.knowledge-dialog-header h2 {
+  font-size: 18px;
+}
+
+.knowledge-dialog-header p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dialog-close-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-tile .attachment-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #ffffff;
+  font-size: 16px;
+}
+
+.file-tile .attachment-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+}
+
+.dialog-close-button:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.knowledge-upload-form {
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+.knowledge-file-picker {
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px dashed #a8b9d8;
+  border-radius: 8px;
+  background: #f8faff;
+  cursor: pointer;
+}
+
+.knowledge-file-picker:hover {
+  border-color: var(--primary);
+  background: #f2f6ff;
+}
+
+.knowledge-file-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 7px;
+  background: #dbeafe;
+  color: var(--primary);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.knowledge-file-copy {
+  min-width: 0;
+}
+
+.knowledge-file-copy strong,
+.knowledge-file-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-file-copy strong {
+  font-size: 14px;
+}
+
+.knowledge-file-copy small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.knowledge-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.knowledge-fields label span {
+  display: block;
+  margin-bottom: 6px;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.knowledge-fields input {
+  width: 100%;
+  height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  outline: none;
+  color: var(--text);
+}
+
+.knowledge-fields input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.knowledge-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 42px;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.knowledge-status {
+  flex: 1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.knowledge-status.error {
+  color: #b91c1c;
+}
+
+.knowledge-status.success {
+  color: #047857;
+}
+
+.knowledge-upload-button {
+  min-width: 96px;
+  height: 40px;
+  padding: 0 15px;
+  border-radius: 7px;
+  background: var(--primary);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.knowledge-upload-button:hover {
+  background: var(--primary-dark);
+}
+
+.knowledge-source-section {
+  padding: 18px 22px 20px;
+}
+
+.knowledge-source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.knowledge-source-heading h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.knowledge-source-heading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.knowledge-source-list {
+  max-height: 240px;
+  margin-top: 10px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+.knowledge-source-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 14px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.knowledge-source-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.image-tile .attachment-remove:hover {
+  background: #0f172a;
+}
+
+.knowledge-source-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.knowledge-source-item .knowledge-vector-count {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.knowledge-source-empty {
+  padding: 24px 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 @media (max-width: 860px) {
@@ -659,5 +1029,29 @@ button:disabled {
 
   .reference-button {
     width: fit-content;
+  }
+
+  .knowledge-dialog {
+    align-items: end;
+    padding: 0;
+  }
+
+  .knowledge-dialog-panel {
+    max-height: 92vh;
+    border-width: 1px 0 0;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .knowledge-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-form-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .knowledge-upload-button {
+    width: 100%;
   }
 }

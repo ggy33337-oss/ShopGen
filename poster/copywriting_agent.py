@@ -1,6 +1,8 @@
-﻿import json
+# -*- coding: utf-8 -*-
 
-from llm.openai_client import extract_chat_content, post_chat_completion, strip_reasoning_tags
+import json
+
+from llm.qwen_client import QwenGateway, extract_chat_content, strip_reasoning_tags
 from poster.json_parser import load_strict_json_object
 from poster.models.copywriting import CopywritingResult
 from poster.models.poster_schema import PosterSchema
@@ -26,13 +28,14 @@ def build_copywriting_messages(poster_schema: PosterSchema):
 
 
 def generate_copywriting(values, poster_schema: PosterSchema):
-    model_name = values.get("POSTER_COPYWRITING_MODEL_NAME") or values["MODEL_NAME"]
-    response = post_chat_completion(
-        values,
-        build_copywriting_messages(poster_schema),
-        {"temperature": 0.5, "max_tokens": 1200},
-        model_name=model_name,
+    gateway = QwenGateway(values)
+    response = gateway.chat_completion(
+        messages=build_copywriting_messages(poster_schema),
+        model=gateway.text_model,
+        temperature=0.5,
+        max_tokens=1200,
         response_format={"type": "json_object"},
+        error_label="千问文案模型",
     )
     raw_content = strip_reasoning_tags(extract_chat_content(response))
     return CopywritingResult.model_validate(load_strict_json_object(raw_content, "Copywriting Agent"))

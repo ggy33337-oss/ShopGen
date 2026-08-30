@@ -1,4 +1,6 @@
-﻿from poster.models.analysis import AnalyzerResult
+# -*- coding: utf-8 -*-
+
+from poster.models.analysis import AnalyzerResult
 from poster.models.copywriting import Copywriting, CopywritingResult, ImagePrompt
 from poster.models.generation import FinalPromptResult, ImageGenerationResult
 from poster.models.poster_schema import PosterSchema

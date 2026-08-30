@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -30,8 +32,21 @@ class ChatResponse(BaseModel):
     image_url: str = ""
     latency_ms: int = Field(default=0, ge=0)
     conversation_id: str = "default"
+    pipeline: str = ""
+    status: str = ""
+    knowledge_status: str = "not_used"
+    task_id: str = ""
 
-    @field_validator("text", "image_url", "conversation_id", mode="before")
+    @field_validator(
+        "text",
+        "image_url",
+        "conversation_id",
+        "pipeline",
+        "status",
+        "knowledge_status",
+        "task_id",
+        mode="before",
+    )
     @classmethod
     def normalize_string(cls, value):
         if value is None:
@@ -43,6 +58,6 @@ class ChatResponse(BaseModel):
     def validate_image_url(cls, value):
         if value == "":
             return value
-        if value.startswith(("http://", "https://")):
+        if value.startswith(("http://", "https://", "/api/images/")):
             return value
         return ""

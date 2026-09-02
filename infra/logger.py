@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+import os
 import re
 import threading
 import time
@@ -58,6 +59,11 @@ def generation_log_context(
 ):
     current = dict(_LOG_CONTEXT.get() or {})
     current.update(fields)
+    # Keep request-wide timing and process identity across nested contexts.
+    if "_generation_started_monotonic" not in current:
+        current["_generation_started_monotonic"] = time.perf_counter()
+        current["process_id"] = os.getpid()
+        current["_generation_event_counter"] = {"value": 0}
     if log_path:
         current["_generation_log_path"] = str(log_path)
         current["_generation_logging_enabled"] = True
@@ -85,21 +91,35 @@ def get_generation_deadline():
 
 
 def write_generation_event(stage, status, **details):
-    context = dict(_LOG_CONTEXT.get() or {})
+    stored_context = _LOG_CONTEXT.get() or {}
+    if not stored_context.get("_generation_logging_enabled", False):
+        return
+    counter = stored_context.get("_generation_event_counter")
+    if not isinstance(counter, dict):
+        counter = {"value": 0}
+        stored_context["_generation_event_counter"] = counter
+    counter["value"] = int(counter.get("value") or 0) + 1
+    event_index = counter["value"]
+    context = dict(stored_context)
     enabled = bool(context.pop("_generation_logging_enabled", False))
     if not enabled:
         return
     log_path = context.pop("_generation_log_path", DEFAULT_GENERATION_LOG_PATH)
-    write_log(
-        {
+    payload = {
             "record_type": "generation_event",
             "stage": str(stage),
             "status": str(status),
+            "event_index": event_index,
+            "elapsed_ms": int(
+                (time.perf_counter() - float(context.get("_generation_started_monotonic") or time.perf_counter()))
+                * 1000
+            ),
             **context,
             **details,
-        },
-        log_path=log_path,
-    )
+        }
+    payload.pop("_generation_started_monotonic", None)
+    payload.pop("_generation_event_counter", None)
+    write_log(payload, log_path=log_path)
 
 
 @contextmanager

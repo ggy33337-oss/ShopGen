@@ -95,14 +95,14 @@ class OrchestratorRoutingTests(unittest.TestCase):
         state = ImageTaskState(
             user_input="写一句文案",
             conversation_id="test",
-            image_model="wanx2.1-imageedit",
+            image_model="gpt-image-2",
         )
 
         ImageGenerationOrchestrator(
             {}, gateway=gateway, image_cache=FakeImageCache()
         ).run(state)
 
-        self.assertEqual("wanx2.1-imageedit", gateway.image_model)
+        self.assertEqual("gpt-image-2", gateway.image_model)
 
     def test_uploaded_image_has_priority_over_history_model_decision(self):
         gateway = FakeGateway(IntentDecision(intent="image", use_previous_image=True))

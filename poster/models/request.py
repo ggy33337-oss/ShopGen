@@ -32,6 +32,6 @@ class PosterGenerationRequest(BaseModel):
         value = normalize_text(value)
         if value.lower() == "auto":
             return ""
-        if value and not value.lower().startswith(("qwen", "wan", "wanx", "gpt-image")):
-            raise ValueError("图片模型必须使用千问、Wanx 或 GPT Image 模型")
+        if value and not value.lower().startswith(("qwen", "gpt-image")):
+            raise ValueError("图片模型必须使用千问或 GPT Image 模型")
         return value

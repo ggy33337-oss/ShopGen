@@ -60,34 +60,10 @@ class QwenImagePayloadTests(unittest.TestCase):
 
         self.assertEqual("qwen3.8-max", gateway.text_model)
 
-    def test_default_image_model_is_wanx_image_edit(self):
+    def test_default_image_model_is_qwen_image(self):
         gateway = QwenGateway({"DASHSCOPE_API_KEY": "test-key"})
 
-        self.assertEqual("wanx2.1-imageedit", gateway.image_model)
-
-    def test_wanx_image_edit_uses_async_task_payload(self):
-        gateway = CapturingQwenGateway()
-        gateway._poll_wanx_task = lambda task_id, deadline: "https://example.com/result.png"
-        gateway._post_json = lambda endpoint, payload, timeout, error_label, attempts=1: (
-            gateway.request_data.update(
-                endpoint=endpoint,
-                payload=payload,
-                timeout=timeout,
-                error_label=error_label,
-                attempts=attempts,
-            )
-            or {"output": {"task_id": "task-1"}, "request_id": "request-1"}
-        )
-
-        image_url = gateway.generate_image("把背景改成红色", ["data:image/png;base64,aW1hZ2U="])
-
-        payload = gateway.request_data["payload"]
-        self.assertEqual("wanx2.1-imageedit", payload["model"])
-        self.assertTrue(gateway.request_data["endpoint"].endswith("/image2image/image-synthesis"))
-        self.assertEqual("description_edit", payload["input"]["function"])
-        self.assertEqual("把背景改成红色", payload["input"]["prompt"])
-        self.assertEqual("data:image/png;base64,aW1hZ2U=", payload["input"]["base_image_url"])
-        self.assertEqual("https://example.com/result.png", image_url)
+        self.assertEqual("qwen-image-3.0", gateway.image_model)
 
     def test_reference_generation_uses_qwen_native_multimodal_payload(self):
         gateway = CapturingQwenGateway({

@@ -6,17 +6,17 @@
 
 - 单一编排核心：`runtime/orchestrator.py` 统一负责意图判断、链路路由、模型调用和状态轨迹。
 - 会话级记忆：使用 MySQL 持久化会话、消息和绘画历史，使用 Redis 保存图片二进制。
-- 三链路路由：历史图修改走链路一，本轮上传图走链路二，无图新请求进入链路三占位。
-- 文本与意图使用 `qwen3.8-max`，视觉规划使用 `qwen3-vl-plus`，图片生成与编辑支持 `qwen-image-3.0`、Wanx 2.1 和 GPT Image。
+- 三链路路由：历史图修改走链路一，本轮上传图走链路二，无图新请求进入图片检索增强链路三。
+- 文本与意图使用 `qwen3.8-max`，视觉规划使用 `qwen3-vl-plus`，图片生成与编辑支持 `qwen-image-3.0` 和 GPT Image。
 - 向量知识库：文档先清理低信息内容并按完整语义边界分块，使用 `qwen3-vl-embedding` 向量化写入 Qdrant；查询时召回 Top 20，再由 `qwen3-rerank` 重排、阈值过滤并最多保留 3 条。
-- 显式占位：无参考图的链路三仍返回 `placeholder`，暂不调用生图模型。
+- 图片检索增强：无参考图的链路三由当前推理模型自主选择文本搜索、图片搜索和网页浏览，生成带视觉依据的提示词后调用现有生图模型。
 
 ## 核心功能
 
 | 功能 | 说明 |
 | --- | --- |
 | 普通聊天 | 支持电商运营建议、商品卖点、标题和营销文案生成 |
-| 图片生成 | 链路一和链路二支持切换 Qwen Image、Wanx 2.1 和 GPT Image |
+| 图片生成 | 链路一和链路二支持切换 Qwen Image 3.0 和 GPT Image |
 | 图文混合 | 同时返回用户可读文案和生成图片 |
 | 图片连续修改 | 基于当前会话最近图片继续换背景、换颜色或优化风格 |
 | 参考资料上传 | 支持 `png`、`jpg`、`jpeg`、`pdf`、`docx` |
@@ -54,7 +54,7 @@ FastAPI 路由层
 MySQL 会话存储 + Redis 图片缓存 + JSONL 轨迹日志
 ```
 
-生成任务的逐阶段诊断日志写入 `logs/generation.jsonl`。每条记录都包含统一的 `task_id`，可查看路由选择、知识检索、提示词规划、图片模型每次请求、重试、超时、HTTP 状态、服务端请求编号、缓存及最终失败阶段。请求正文中的 Base64 图片、API Key 和 Authorization 会自动脱敏；`logs/llm.jsonl` 继续保存成功任务摘要。
+生成任务的逐阶段诊断日志写入 `logs/generation.jsonl`。每条记录都包含统一的 `task_id`、`event_index`、请求内累计 `elapsed_ms` 和 `process_id`，可按顺序重建路由选择、知识检索、提示词规划、搜索/浏览 HTTP、单张参考图下载、图片模型每次请求、重试、超时、缓存及最终失败阶段。请求正文中的 Base64 图片、API Key 和 Authorization 会自动脱敏；`logs/llm.jsonl` 继续保存成功任务摘要。也可通过 `GET /api/generation-logs/{task_id}` 获取某次任务的完整事件和模型请求日志。
 
 ## 普通图文生成流程
 
@@ -69,9 +69,9 @@ MySQL 会话存储 + Redis 图片缓存 + JSONL 轨迹日志
   ↓
 否：本轮有上传图片？是 → 链路二（上传图片 + 知识库检索上下文）
   ↓
-否 → 链路三占位（暂不调用生图模型）
+否 → 链路三（多轮文本/图片/网页检索 → grounded prompt → 现有生图模型）
   ↓
-千问视觉规划 + Wanx 2.1 图片生成/编辑 → 写入 messages / visual_history
+千问视觉规划 + Qwen Image 3.0 / GPT Image 生成与编辑 → 写入 messages / visual_history
 ```
 
 ## 海报生成流程
@@ -87,7 +87,7 @@ File Parser 解析图片、PDF、DOCX 中的文本和图片
   ↓
 知识库向量检索 + 千问视觉规划
   ↓
-Wanx 2.1 图片生成/编辑 → 返回海报文案、图片和链路元数据
+Qwen Image 3.0 / GPT Image 生成与编辑 → 返回海报文案、图片和链路元数据
 ```
 
 ## 关键工程设计
@@ -110,7 +110,7 @@ Wanx 2.1 图片生成/编辑 → 返回海报文案、图片和链路元数据
 
 ### 3. 如何处理模型超时和断连
 
-图片生成和图片编辑通常耗时较长。Wanx 2.1 通过异步任务提交与状态轮询获取结果；配置错误、鉴权失败或模型无有效图片输出时明确返回失败，不伪装成成功。
+图片生成和图片编辑通常耗时较长。配置错误、鉴权失败或模型无有效图片输出时明确返回失败，不伪装成成功。
 
 ### 4. 链路二如何整合提示词优先级
 
@@ -147,7 +147,7 @@ Wanx 2.1 图片生成/编辑 → 返回海报文案、图片和链路元数据
 ```text
 api/                       接口层：路由和 DTO
 services/                  输入、会话和响应适配层
-runtime/                   唯一编排器、任务状态和链路三占位
+runtime/                   唯一编排器、任务状态和链路三图片检索增强
 knowledge/                 结构化文档解析、语义分块、Qdrant 文本/图片向量库
 poster/                    文件解析和海报领域数据模型
 llm/                       千问网关和 Prompt 构造
@@ -241,7 +241,7 @@ DASHSCOPE_API_KEY="your_dashscope_key"
 MODEL_PROXY_URL=""
 QWEN_TEXT_MODEL="qwen3.8-max"
 QWEN_VL_MODEL="qwen3-vl-plus"
-QWEN_IMAGE_MODEL="wanx2.1-imageedit"
+QWEN_IMAGE_MODEL="qwen-image-3.0"
 QWEN_IMAGE_TOTAL_TIMEOUT="420"
 OPENAI_IMAGE_API_KEY="your_openai_compatible_key"
 OPENAI_IMAGE_BASE_URL="https://api.openai.com/v1"

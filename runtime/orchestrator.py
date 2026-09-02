@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 
 import base64
+import mimetypes
+from pathlib import Path
+from types import SimpleNamespace
 
 from infra.logger import generation_log_context, generation_stage, write_generation_event
 from llm.prompt_builder import build_message
@@ -15,7 +18,7 @@ from runtime.models import (
     ROUTE_CHAIN_TWO,
     ROUTE_TEXT,
 )
-from runtime.placeholders import PlaceholderTextToImageChain
+from runtime.gen_searcher_chain import GenSearcherImageChain
 from services.visual_reference_loader import (
     load_reference_image,
     prepare_visual_planner_image,
@@ -42,7 +45,7 @@ class ImageGenerationOrchestrator:
         self.values = values
         self.gateway = gateway or QwenGateway(values)
         self.knowledge_base = knowledge_base or QdrantKnowledgeBase(values)
-        self.chain_three = chain_three or PlaceholderTextToImageChain()
+        self.chain_three = chain_three or GenSearcherImageChain(values, gateway=self.gateway)
         self.image_cache = image_cache or RedisImageCache(values)
 
     def run(self, state: ImageTaskState) -> OrchestrationResult:
@@ -282,12 +285,94 @@ class ImageGenerationOrchestrator:
             match_count=len(knowledge.matches),
             **self._knowledge_score_trace(knowledge),
         )
-        placeholder = self.chain_three.run(state.user_input, knowledge)
-        state.record("chain_three_placeholder_returned")
+        try:
+            with generation_stage(
+                "chain_three.run",
+                candidate_knowledge_matches=len(knowledge.matches),
+            ):
+                chain_result = self.chain_three.run(
+                    state.user_input,
+                    knowledge,
+                    gateway=self.gateway,
+                    task_id=state.task_id,
+                )
+        except TypeError as exc:
+            # Keep the narrow two-argument contract usable for injected test or
+            # application-specific chain implementations.
+            error_text = str(exc)
+            signature_mismatch = (
+                "unexpected keyword argument" in error_text
+                or "takes " in error_text and " positional argument" in error_text
+            )
+            if not signature_mismatch:
+                raise
+            with generation_stage("chain_three.run", compatibility_fallback=True):
+                chain_result = self.chain_three.run(state.user_input, knowledge)
+        state.record(
+            "chain_three_search_completed",
+            status=chain_result.status,
+            tool_calls=getattr(chain_result, "tool_calls", 0),
+            reference_count=len(getattr(chain_result, "references", ()) or ()),
+        )
+        image_url = ""
+        reference_images = self._cache_chain_three_references(
+            getattr(chain_result, "references", ())
+        )
+        generation_trace = {
+            "model": self.gateway.image_model,
+            "prompt": getattr(chain_result, "image_prompt", ""),
+            "reference_image_count": len(reference_images),
+            "reference_images": reference_images,
+            "image_input": {
+                "model": self.gateway.image_model,
+                "prompt": getattr(chain_result, "image_prompt", ""),
+                "reference_image_count": len(reference_images),
+                "reference_images": [
+                    {
+                        "index": index,
+                        "img_id": item.get("img_id", ""),
+                        "image_url": item.get("image_url", ""),
+                    }
+                    for index, item in enumerate(reference_images, start=1)
+                ],
+            },
+        }
+        write_generation_event(
+            "chain_three.image_input",
+            "completed",
+            model=self.gateway.image_model,
+            prompt=getattr(chain_result, "image_prompt", ""),
+            reference_image_count=len(reference_images),
+            references=reference_images,
+        )
+        if getattr(chain_result, "generated_url", ""):
+            with generation_stage("image.cache", reference_source="chain_three"):
+                image_url = self._cache_generated_image(chain_result.generated_url)
+            state.record("image_generated", model=self.gateway.image_model, storage="redis")
         return self._result(
             state,
-            reply_text=placeholder.reply_text,
-            status=placeholder.status,
+            reply_text=chain_result.reply_text,
+            status=chain_result.status,
+            image_url=image_url,
+            image_prompt=getattr(chain_result, "image_prompt", ""),
+            copywriting=self._copywriting_from_chain(chain_result),
+            reference_images=reference_images,
+            generation_trace=generation_trace,
+        )
+
+    @staticmethod
+    def _copywriting_from_chain(chain_result):
+        from runtime.models import Copywriting
+
+        payload = getattr(chain_result, "copywriting", None)
+        if isinstance(payload, Copywriting):
+            return payload
+        if not isinstance(payload, dict):
+            return Copywriting()
+        return Copywriting(
+            headline=str(payload.get("headline") or "").strip()[:400],
+            subheadline=str(payload.get("subheadline") or "").strip()[:400],
+            cta=str(payload.get("cta") or "").strip()[:400],
         )
 
     def _result(
@@ -300,6 +385,8 @@ class ImageGenerationOrchestrator:
         copywriting=None,
         root_reference_url="",
         edit_revision=0,
+        reference_images=(),
+        generation_trace=None,
     ):
         from runtime.models import Copywriting
 
@@ -315,6 +402,8 @@ class ImageGenerationOrchestrator:
             actions=tuple(state.actions),
             root_reference_url=root_reference_url,
             edit_revision=edit_revision,
+            reference_images=tuple(reference_images or ()),
+            generation_trace=dict(generation_trace or {}),
         )
 
     def _requires_reupload(self, state, revision, reason):
@@ -344,6 +433,55 @@ class ImageGenerationOrchestrator:
             raise RuntimeError("图片模型已生成图片，但无法下载到 Redis 图片缓存。")
         cached = self.image_cache.put_image(reference.content, reference.content_type)
         return cached.public_url
+
+    def _cache_chain_three_references(self, references):
+        cached_references = []
+        for index, item in enumerate(references or (), start=1):
+            item = dict(item or {})
+            source_url = str(item.get("url") or "").strip()
+            local_path = str(item.get("local_path") or "").strip()
+            reference = load_reference_image(self.values, local_path or source_url)
+            if not reference and local_path:
+                try:
+                    content = Path(local_path).read_bytes()
+                    content_type = mimetypes.guess_type(local_path)[0] or "image/jpeg"
+                    reference = SimpleNamespace(content=content, content_type=content_type)
+                except (OSError, ValueError):
+                    reference = None
+            if not reference:
+                write_generation_event(
+                    "chain_three.reference_cache",
+                    "failed",
+                    reference_index=index,
+                    img_id=str(item.get("img_id") or ""),
+                    source_url=source_url,
+                    local_path=local_path,
+                )
+                continue
+            try:
+                cached = self.image_cache.put_image(reference.content, reference.content_type)
+            except Exception as exc:
+                write_generation_event(
+                    "chain_three.reference_cache",
+                    "failed",
+                    reference_index=index,
+                    img_id=str(item.get("img_id") or ""),
+                    error_message=str(exc)[:500],
+                )
+                continue
+            cached_references.append(
+                {
+                    "img_id": str(item.get("img_id") or f"IMG_{index:03d}"),
+                    "title": str(item.get("title") or "").strip()[:300],
+                    "note": str(item.get("note") or "").strip()[:500],
+                    "source_url": source_url,
+                    "page_url": str(item.get("page_url") or "").strip()[:2000],
+                    "image_url": cached.public_url,
+                    "content_type": str(reference.content_type or "image/jpeg"),
+                    "bytes": len(reference.content),
+                }
+            )
+        return cached_references
 
     def _prepare_planner_references(self, reference_images):
         prepared = []

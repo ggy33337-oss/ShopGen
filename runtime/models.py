@@ -8,7 +8,7 @@ from typing import Any
 ROUTE_TEXT = "text"
 ROUTE_CHAIN_ONE = "chain_1_history_image"
 ROUTE_CHAIN_TWO = "chain_2_uploaded_image"
-ROUTE_CHAIN_THREE = "chain_3_placeholder"
+ROUTE_CHAIN_THREE = "chain_3_search_grounded"
 
 
 @dataclass(frozen=True)
@@ -68,3 +68,5 @@ class OrchestrationResult:
     actions: tuple[dict[str, Any], ...] = ()
     root_reference_url: str = ""
     edit_revision: int = 0
+    reference_images: tuple[dict[str, Any], ...] = ()
+    generation_trace: dict[str, Any] = field(default_factory=dict)

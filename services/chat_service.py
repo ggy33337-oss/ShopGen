@@ -118,6 +118,8 @@ async def ask(user_input, conversation_id=None, image_model=""):
                 "response_text": assistant_text,
                 "image_url": image_url,
                 "image_prompt": result.image_prompt if result else "",
+                "reference_images": list(result.reference_images) if result else [],
+                "generation_trace": result.generation_trace if result else {},
                 "knowledge_status": result.knowledge_status if result else "not_used",
                 "actions": list(result.actions) if result else list(state.actions),
                 "latency_ms": latency_ms,

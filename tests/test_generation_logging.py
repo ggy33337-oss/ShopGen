@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import json
+import asyncio
 import socket
 import tempfile
 import unittest
@@ -12,6 +13,39 @@ from llm.qwen_client import QwenGateway
 
 
 class GenerationLoggerTests(unittest.TestCase):
+    def test_events_include_request_timing_sequence_and_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "generation.jsonl"
+            with generation_log_context(log_path=log_path, task_id="timing-task"):
+                write_generation_event("outer", "started")
+                with generation_log_context(route="chain_3_search_grounded"):
+                    write_generation_event("inner", "completed")
+                write_generation_event("outer", "completed")
+
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([1, 2, 3], [record["event_index"] for record in records])
+            self.assertTrue(all(record["elapsed_ms"] >= 0 for record in records))
+            self.assertTrue(all(isinstance(record["process_id"], int) for record in records))
+
+    def test_threaded_chain_keeps_one_event_sequence(self):
+        async def exercise(log_path):
+            with generation_log_context(log_path=log_path, task_id="threaded-task"):
+                write_generation_event("outer", "started")
+                await asyncio.to_thread(write_generation_event, "worker", "completed")
+                write_generation_event("outer", "completed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "generation.jsonl"
+            asyncio.run(exercise(log_path))
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([1, 2, 3], [record["event_index"] for record in records])
+
     def test_events_are_disabled_without_a_request_context(self):
         with patch("infra.logger.write_log") as mocked_write_log:
             write_generation_event("image.generate", "started")

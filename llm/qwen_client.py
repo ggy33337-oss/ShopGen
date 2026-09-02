@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import hashlib
 import json
 import re
 import socket
@@ -30,10 +31,8 @@ DEFAULT_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 DEFAULT_TEXT_MODEL = "qwen3.8-max"
 DEFAULT_VL_MODEL = "qwen3-vl-plus"
-DEFAULT_IMAGE_MODEL = "wanx2.1-imageedit"
-WANX_IMAGE_EDIT_MODEL = "wanx2.1-imageedit"
+DEFAULT_IMAGE_MODEL = "qwen-image-3.0"
 DEFAULT_GPT_IMAGE_MODEL = "gpt-image-2"
-WANX_IMAGE_POLL_INTERVAL = 2
 
 
 def strip_reasoning_tags(text):
@@ -84,6 +83,28 @@ def coerce_bool(value, default=False):
     return bool(value)
 
 
+def _reference_input_summaries(reference_images):
+    summaries = []
+    for index, value in enumerate(reference_images or (), start=1):
+        text = str(value or "")
+        lowered = text.lower()
+        if lowered.startswith("data:"):
+            kind = "data_url"
+        elif lowered.startswith(("http://", "https://")):
+            kind = "http_url"
+        else:
+            kind = "other"
+        summaries.append(
+            {
+                "index": index,
+                "kind": kind,
+                "chars": len(text),
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+            }
+        )
+    return summaries
+
+
 def get_proxy_url(values):
     return str(values.get("MODEL_PROXY_URL", "") or "").strip()
 
@@ -105,9 +126,9 @@ def normalize_qwen_model(model_name, fallback, capability):
 
 def normalize_image_model(model_name, fallback, capability):
     model = str(model_name or fallback).strip()
-    if not model.lower().startswith(("qwen", "wan", "wanx", "gpt-image")):
+    if not model.lower().startswith(("qwen", "gpt-image")):
         raise RuntimeError(
-            f"{capability}模型必须使用千问、Wanx 或 GPT Image 模型，当前配置为：{model}"
+            f"{capability}模型必须使用千问或 GPT Image 模型，当前配置为：{model}"
         )
     return model
 
@@ -288,12 +309,22 @@ class QwenGateway:
         normalized_prompt = " ".join(str(prompt or "").split())
         if not normalized_prompt:
             raise RuntimeError("图片模型缺少生图提示词。")
+        references = list(reference_images or [])
+        write_generation_event(
+            "image_model.input",
+            "completed",
+            model=self.image_model,
+            prompt=normalized_prompt,
+            prompt_chars=len(normalized_prompt),
+            reference_image_count=len(references[:16]),
+            reference_inputs=_reference_input_summaries(references[:16]),
+        )
         if self.image_model.lower().startswith("gpt-image"):
             with generation_log_context(
                 component="image_model",
                 model=self.image_model,
                 provider="openai-compatible",
-                reference_image_count=len((reference_images or [])[:16]),
+                reference_image_count=len(references[:16]),
                 prompt_chars=len(normalized_prompt),
             ):
                 with generation_stage(
@@ -302,29 +333,9 @@ class QwenGateway:
                     max_attempts=MAX_IMAGE_ATTEMPTS,
                 ):
                     return self._generate_openai_image(
-                        normalized_prompt[:32000], reference_images or []
+                        normalized_prompt[:32000], references
                     )
-        if self.image_model.lower().startswith("wan"):
-            if self.image_model.lower() != WANX_IMAGE_EDIT_MODEL:
-                raise RuntimeError(
-                    "当前 Wanx 模型仅支持 wanx2.1-imageedit；"
-                    "wanx2.1-t2i-turbo 不支持当前参考图编辑链路。"
-                )
-            with generation_log_context(
-                component="image_model",
-                model=self.image_model,
-                reference_image_count=len((reference_images or [])[:1]),
-                prompt_chars=len(normalized_prompt[:800]),
-            ):
-                with generation_stage(
-                    "image_model.generate",
-                    timeout_seconds=self.image_total_timeout,
-                    max_attempts=MAX_IMAGE_ATTEMPTS,
-                ):
-                    return self._generate_wanx_image_edit(
-                        normalized_prompt[:800], reference_images or []
-                    )
-        content = [{"image": image} for image in (reference_images or [])[:3]]
+        content = [{"image": image} for image in references[:3]]
         content.append({"text": normalized_prompt})
         parameters = {
             "n": 1,
@@ -335,7 +346,7 @@ class QwenGateway:
             "prompt_extend": True,
             "watermark": False,
         }
-        if not reference_images:
+        if not references:
             parameters["size"] = str(self.values.get("QWEN_IMAGE_SIZE") or "2048*2048")
         payload = {
             "model": self.image_model,
@@ -352,6 +363,22 @@ class QwenGateway:
             reference_image_count=len(content) - 1,
             prompt_chars=len(normalized_prompt),
         ):
+            write_generation_event(
+                "image_model.payload",
+                "completed",
+                model=self.image_model,
+                provider="dashscope",
+                prompt=normalized_prompt,
+                reference_image_count=len(content) - 1,
+                payload_summary={
+                    "input_content": [
+                        {"type": "image", "index": index}
+                        for index, _ in enumerate(content[:-1], start=1)
+                    ]
+                    + [{"type": "text", "chars": len(normalized_prompt)}],
+                    "parameters": parameters,
+                },
+            )
             with generation_stage(
                 "image_model.generate",
                 timeout_seconds=self.image_total_timeout,
@@ -484,114 +511,6 @@ class QwenGateway:
                 return f"data:image/png;base64,{encoded}"
         return ""
 
-    def _generate_wanx_image_edit(self, prompt, reference_images):
-        if not reference_images:
-            raise RuntimeError("Wanx 2.1 图片编辑必须提供参考图片。")
-        endpoint = str(
-            self.values.get("DASHSCOPE_WANX_IMAGE_ENDPOINT")
-            or f"{self.api_base_url}/services/aigc/image2image/image-synthesis"
-        ).strip()
-        payload = {
-            "model": self.image_model,
-            "input": {
-                "function": "description_edit",
-                "prompt": prompt,
-                "base_image_url": str(reference_images[0]).strip(),
-            },
-            "parameters": {"n": 1, "watermark": False},
-        }
-        deadline = get_generation_deadline()
-        own_deadline = time.perf_counter() + self.image_total_timeout
-        deadline = min(deadline, own_deadline) if deadline is not None else own_deadline
-        with generation_log_context(deadline_monotonic=deadline):
-            response = self._post_json(
-                endpoint,
-                payload,
-                timeout=IMAGE_REQUEST_TIMEOUT,
-                error_label="万相图片模型",
-                attempts=MAX_IMAGE_ATTEMPTS,
-            )
-            task_id = str(response.get("output", {}).get("task_id") or "").strip()
-            if not task_id:
-                code = str(response.get("code") or "").strip()
-                message = str(response.get("message") or "").strip()
-                detail = f"{code} {message}".strip() or "创建任务响应中没有 task_id"
-                raise RuntimeError(f"万相图片模型创建任务失败：{detail}")
-            write_generation_event(
-                "image_model.task_submitted",
-                "completed",
-                task_id=task_id,
-                provider_request_id=str(response.get("request_id") or "").strip(),
-            )
-            return self._poll_wanx_task(task_id, deadline)
-
-    def _poll_wanx_task(self, task_id, deadline):
-        task_endpoint = f"{self.api_base_url}/tasks/{task_id}"
-        while True:
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                raise RuntimeError("万相图片模型任务等待超时。")
-            poll_timeout = min(30.0, remaining)
-            started_at = time.perf_counter()
-            write_generation_event(
-                "image_model.task_poll",
-                "started",
-                task_id=task_id,
-                timeout_seconds=poll_timeout,
-            )
-            try:
-                req = request.Request(
-                    task_endpoint,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    method="GET",
-                )
-                with open_model_request(self.values, req, poll_timeout) as response:
-                    body = response.read().decode("utf-8")
-                    payload = json.loads(body)
-                output = payload.get("output") if isinstance(payload, dict) else {}
-                output = output if isinstance(output, dict) else {}
-                status = str(output.get("task_status") or "UNKNOWN").upper()
-                write_generation_event(
-                    "image_model.task_poll",
-                    "completed",
-                    task_id=task_id,
-                    task_status=status,
-                    latency_ms=int((time.perf_counter() - started_at) * 1000),
-                )
-            except error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                write_generation_event(
-                    "image_model.task_poll",
-                    "failed",
-                    task_id=task_id,
-                    latency_ms=int((time.perf_counter() - started_at) * 1000),
-                    http_status=exc.code,
-                    error_message=body[:2000],
-                )
-                raise RuntimeError(f"万相图片模型查询任务失败：HTTP {exc.code}") from exc
-            except (TimeoutError, socket.timeout, error.URLError, json.JSONDecodeError) as exc:
-                write_generation_event(
-                    "image_model.task_poll",
-                    "failed",
-                    task_id=task_id,
-                    latency_ms=int((time.perf_counter() - started_at) * 1000),
-                    error_category="timeout" if isinstance(exc, (TimeoutError, socket.timeout)) else "connection_error",
-                    error_type=type(exc).__name__,
-                    error_message=str(exc)[:2000],
-                )
-                raise RuntimeError("万相图片模型查询任务超时或连接中断。") from exc
-
-            if status == "SUCCEEDED":
-                for item in output.get("results", []):
-                    image_url = str(item.get("url") or item.get("image_url") or "").strip()
-                    if image_url:
-                        return image_url
-                raise RuntimeError("万相图片模型任务成功，但响应中没有图片 URL。")
-            if status in {"FAILED", "CANCELED", "UNKNOWN"}:
-                message = str(payload.get("message") or output.get("message") or "任务未成功完成").strip()
-                raise RuntimeError(f"万相图片模型任务{status}：{message}")
-            time.sleep(min(WANX_IMAGE_POLL_INTERVAL, max(0, deadline - time.perf_counter())))
-
     def chat_completion(
         self,
         messages,
@@ -624,7 +543,7 @@ class QwenGateway:
         last_error = None
         endpoint_name = self._safe_endpoint(endpoint)
         total_timeout = None
-        if error_label in {"千问图片模型", "万相图片模型"}:
+        if error_label == "千问图片模型":
             total_timeout = self.image_total_timeout
         request_deadline = get_generation_deadline()
         if total_timeout is not None:
@@ -673,11 +592,6 @@ class QwenGateway:
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json; charset=utf-8",
                     "Idempotency-Key": idempotency_key,
-                    **(
-                        {"X-DashScope-Async": "enable"}
-                        if error_label == "万相图片模型"
-                        else {}
-                    ),
                 },
                 method="POST",
             )

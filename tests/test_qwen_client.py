@@ -29,6 +29,32 @@ class CapturingQwenGateway(QwenGateway):
 
 
 class QwenImagePayloadTests(unittest.TestCase):
+    def test_intent_classifier_parses_layer_tool_and_clarity_fields(self):
+        gateway = QwenGateway({"DASHSCOPE_API_KEY": "test-key"})
+        gateway.chat_completion = lambda *args, **kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"intent":"image","use_previous_image":true,'
+                            '"needs_tool":"true","is_clear":"false","reason":"needs detail"}'
+                        )
+                    }
+                }
+            ]
+        }
+
+        decision = gateway.classify_request(
+            user_input="做一个",
+            history_messages=[],
+            visual_history=[],
+        )
+
+        self.assertEqual("image", decision.intent)
+        self.assertTrue(decision.use_previous_image)
+        self.assertTrue(decision.needs_tool)
+        self.assertFalse(decision.is_clear)
+
     def test_default_text_model_is_qwen38_max(self):
         gateway = QwenGateway({"DASHSCOPE_API_KEY": "test-key"})
 

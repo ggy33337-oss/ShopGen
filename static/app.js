@@ -44,7 +44,6 @@ let selectedAttachments = [];
 const MAX_REFERENCE_ATTACHMENTS = 3;
 const IMAGE_MODEL_LABELS = new Map([
   ["", "自动匹配"],
-  ["wanx2.1-imageedit", "Wanx 2.1"],
   ["qwen-image-3.0", "Qwen Image 3.0"],
   ["gpt-image-2", "GPT Image 2"],
 ]);
@@ -708,7 +707,7 @@ autoModelToggle.addEventListener("change", () => {
     return;
   }
   if (!selectedImageModel) {
-    selectedImageModel = "wanx2.1-imageedit";
+    selectedImageModel = "qwen-image-3.0";
     localStorage.setItem("image_model", selectedImageModel);
     updateModelPicker();
   }

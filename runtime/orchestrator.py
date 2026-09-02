@@ -24,6 +24,7 @@ from services.visual_reference_loader import (
 
 MAX_QWEN_REFERENCE_IMAGES = 3
 MAX_EDIT_REVISION = 2
+CLARIFICATION_REQUIRED_MESSAGE = "请明确具体的生图任务。"
 REUPLOAD_REQUIRED_MESSAGE = "请重新上传参考图片并仔细规划提示词。"
 
 
@@ -52,6 +53,30 @@ class ImageGenerationOrchestrator:
                 "图片生成",
             )
         with generation_log_context(task_id=state.task_id, conversation_id=state.conversation_id):
+            uploaded_images = self._uploaded_images(state)
+            if uploaded_images:
+                state.intent = "image"
+                state.record(
+                    "intent_decided",
+                    intent=state.intent,
+                    use_previous_image=False,
+                    needs_tool=False,
+                    is_clear=True,
+                    reason="本轮上传图片，直接进入链路二",
+                )
+                state.route = ROUTE_CHAIN_TWO
+                write_generation_event(
+                    "route.select",
+                    "completed",
+                    route=state.route,
+                    intent=state.intent,
+                    use_previous_image=False,
+                    needs_tool=False,
+                    is_clear=True,
+                    reason="本轮上传图片，直接进入链路二",
+                )
+                with generation_log_context(route=state.route):
+                    return self._run_chain_two(state)
             with generation_stage(
                 "intent.classify",
                 has_uploaded_image=bool(self._uploaded_images(state)),
@@ -70,18 +95,23 @@ class ImageGenerationOrchestrator:
                 "intent_decided",
                 intent=decision.intent,
                 use_previous_image=decision.use_previous_image,
+                needs_tool=decision.needs_tool,
+                is_clear=decision.is_clear,
                 reason=decision.reason,
             )
 
-            if decision.intent == "text" and not state.force_image:
+            if not decision.is_clear:
                 state.route = ROUTE_TEXT
-                selected_runner = self._run_text
-            elif self._uploaded_images(state):
-                state.route = ROUTE_CHAIN_TWO
-                selected_runner = self._run_chain_two
+                selected_runner = self._run_clarification
             elif decision.use_previous_image and self._has_history_image(state):
                 state.route = ROUTE_CHAIN_ONE
                 selected_runner = self._run_chain_one
+            elif decision.needs_tool:
+                state.route = ROUTE_CHAIN_THREE
+                selected_runner = self._run_chain_three
+            elif decision.intent == "text" and not state.force_image:
+                state.route = ROUTE_TEXT
+                selected_runner = self._run_text
             else:
                 state.route = ROUTE_CHAIN_THREE
                 selected_runner = self._run_chain_three
@@ -92,6 +122,8 @@ class ImageGenerationOrchestrator:
                 route=state.route,
                 intent=decision.intent,
                 use_previous_image=decision.use_previous_image,
+                needs_tool=decision.needs_tool,
+                is_clear=decision.is_clear,
                 reason=decision.reason,
             )
             with generation_log_context(route=state.route):
@@ -107,6 +139,14 @@ class ImageGenerationOrchestrator:
         reply_text = self.gateway.generate_text(messages, intent="text")
         state.record("text_generated")
         return self._result(state, reply_text=reply_text, status="completed")
+
+    def _run_clarification(self, state):
+        state.record("clarification_required")
+        return self._result(
+            state,
+            reply_text=CLARIFICATION_REQUIRED_MESSAGE,
+            status="clarification_required",
+        )
 
     def _run_chain_one(self, state):
         selected = self._select_history_image(state.visual_history)

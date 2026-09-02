@@ -15,7 +15,7 @@ from runtime.models import (
     ROUTE_TEXT,
 )
 from runtime.orchestrator import ImageGenerationOrchestrator
-from runtime.orchestrator import REUPLOAD_REQUIRED_MESSAGE
+from runtime.orchestrator import CLARIFICATION_REQUIRED_MESSAGE, REUPLOAD_REQUIRED_MESSAGE
 
 
 REFERENCE_DATA_URL = "data:image/png;base64,aW1hZ2U="
@@ -125,6 +125,25 @@ class OrchestratorRoutingTests(unittest.TestCase):
         self.assertEqual([UPLOAD_DATA_URL], gateway.generated_references)
         self.assertEqual("/api/images/0123456789abcdef0123456789abcdef", result.image_url)
         self.assertEqual(1, len(cache.images))
+
+    def test_uploaded_image_bypasses_intent_model_and_goes_to_chain_two(self):
+        class NoClassifierGateway(FakeGateway):
+            def classify_request(self, **kwargs):
+                raise AssertionError("uploaded image should bypass intent classification")
+
+        gateway = NoClassifierGateway(IntentDecision(intent="text"))
+        state = ImageTaskState(
+            user_input="参考这张图生成商品图",
+            conversation_id="test",
+            uploaded_content=SimpleNamespace(data_urls=(UPLOAD_DATA_URL,), text=""),
+        )
+
+        result = ImageGenerationOrchestrator(
+            {}, gateway=gateway, knowledge_base=FakeKnowledgeBase(), image_cache=FakeImageCache()
+        ).run(state)
+
+        self.assertEqual(ROUTE_CHAIN_TWO, result.route)
+        self.assertEqual("image", state.intent)
 
     def test_model_can_route_ambiguous_request_to_history_without_upload(self):
         gateway = FakeGateway(IntentDecision(intent="image", use_previous_image=True))
@@ -245,6 +264,29 @@ class OrchestratorRoutingTests(unittest.TestCase):
         self.assertEqual("matched", result.knowledge_status)
         self.assertEqual("", result.image_url)
         self.assertEqual([], gateway.generated_references)
+
+    def test_unclear_text_request_returns_clarification_without_generation(self):
+        gateway = FakeGateway(IntentDecision(intent="text", is_clear=False))
+        state = ImageTaskState(user_input="做一个", conversation_id="test")
+
+        result = ImageGenerationOrchestrator(
+            {}, gateway=gateway, knowledge_base=FakeKnowledgeBase(), image_cache=FakeImageCache()
+        ).run(state)
+
+        self.assertEqual(ROUTE_TEXT, result.route)
+        self.assertEqual("clarification_required", result.status)
+        self.assertEqual(CLARIFICATION_REQUIRED_MESSAGE, result.reply_text)
+
+    def test_tool_request_uses_chain_three(self):
+        gateway = FakeGateway(IntentDecision(intent="image", needs_tool=True))
+        state = ImageTaskState(user_input="调用外部工具完成任务", conversation_id="test")
+
+        result = ImageGenerationOrchestrator(
+            {}, gateway=gateway, knowledge_base=FakeKnowledgeBase(), image_cache=FakeImageCache()
+        ).run(state)
+
+        self.assertEqual(ROUTE_CHAIN_THREE, result.route)
+        self.assertEqual("placeholder", result.status)
 
 
 if __name__ == "__main__":

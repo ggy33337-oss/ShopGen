@@ -74,6 +74,16 @@ def get_required_value(values, key):
     return value
 
 
+def coerce_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y", "是", "真"}
+    return bool(value)
+
+
 def get_proxy_url(values):
     return str(values.get("MODEL_PROXY_URL", "") or "").strip()
 
@@ -150,15 +160,19 @@ class QwenGateway:
         visual_text = self._visual_history_text(visual_history)
         system_message = (
             "你是图片生成系统的第一层意图推理器。必须结合最近对话、历史图片记录、"
-            "本轮是否上传新图片和当前请求进行语义推理，不要只靠固定关键词判断。"
+            "当前请求已经过应用层图片检查；没有上传图片时才调用本模型判断文字意图，"
+            "不要只靠固定关键词判断。"
             "用户可能用‘上一张’‘刚才生成的’‘上一版’，也可能用较模糊的指代表达；"
             "你需要根据完整会话判断其实际指向。只返回严格 JSON 对象，字段为 "
-            '{"intent":"text|image|mixed","use_previous_image":false,"reason":""}。'
-            "intent=text 表示只需文字；image 表示只需图片；mixed 表示图片和配套文字。"
+            '{"intent":"text|image|mixed","use_previous_image":false,"needs_tool":false,"is_clear":true,"reason":""}。'
+            "intent=text 表示文本层请求；image 表示图片层请求；mixed 表示图片和配套文字。"
             "use_previous_image 表示用户实际要求修改、延续或重做会话中的历史图片；"
+            "needs_tool 表示仅靠当前文本模型无法完成、需要进入工具链路三的请求；"
+            "is_clear 表示用户是否给出了明确、可执行的任务目标。"
+            "如果用户只是寒暄、表达不完整、只说‘做一个’或没有具体生图目标，is_clear 必须为 false；"
             "表达可以明确也可以模糊，由你结合上下文判断。"
-            "本轮上传的新图片不是历史图片；如果用户指的是本轮上传图，"
-            "use_previous_image 必须为 false。reason 必须简洁说明判断依据。"
+            "没有上传图片时，只有明确基于历史图片修改且存在历史图片线索时，use_previous_image 才为 true。"
+            "reason 必须简洁说明判断依据。"
         )
         if force_image:
             system_message += "当前入口是海报生成入口，intent 必须为 image 或 mixed。"
@@ -192,7 +206,9 @@ class QwenGateway:
             raise RuntimeError(f"千问意图识别结果无效：{intent or '空'}")
         return IntentDecision(
             intent=intent,
-            use_previous_image=bool(payload.get("use_previous_image")),
+            use_previous_image=coerce_bool(payload.get("use_previous_image")),
+            needs_tool=coerce_bool(payload.get("needs_tool")),
+            is_clear=coerce_bool(payload.get("is_clear"), default=True),
             reason=str(payload.get("reason") or "").strip()[:500],
         )
 

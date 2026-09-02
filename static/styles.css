@@ -616,7 +616,7 @@ body.dialog-open {
 
 .model-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   gap: 4px;
   margin: 16px 0 10px;
   padding: 4px;
@@ -635,10 +635,6 @@ body.dialog-open {
 .model-tab.active {
   background: #ffffff;
   box-shadow: 0 2px 7px rgba(20, 30, 50, 0.08);
-}
-
-.model-tab:disabled {
-  color: #a2aab6;
 }
 
 .model-option-list {
@@ -679,10 +675,6 @@ body.dialog-open {
   font-size: 16px;
   font-weight: 800;
   box-shadow: 0 3px 8px rgba(20, 30, 50, 0.08);
-}
-
-.model-option-icon.wanx {
-  color: #2563eb;
 }
 
 .model-option-icon.qwen {

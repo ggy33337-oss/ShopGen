@@ -16,6 +16,8 @@ class IntentDecision:
     intent: str
     use_previous_image: bool = False
     reason: str = ""
+    needs_tool: bool = False
+    is_clear: bool = True
 
 
 @dataclass(frozen=True)

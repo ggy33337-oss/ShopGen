@@ -5,11 +5,34 @@ import unittest
 from runtime.gen_searcher_chain import (
     GenSearcherImageChain,
     _bounded_float,
+    _extract_entity_hint,
+    _matches_entity,
     _normalize_visual_requirements,
 )
 
 
 class GenSearcherSelectionTests(unittest.TestCase):
+    def test_entity_hint_preserves_the_exact_college_name(self):
+        self.assertEqual(
+            "南昌航空大学科技学院",
+            _extract_entity_hint("生成南昌航空大学科技学院招生海报"),
+        )
+
+    def test_entity_filter_rejects_parent_university_results(self):
+        entity = "南昌航空大学科技学院"
+        self.assertTrue(
+            _matches_entity(
+                {"title": "南昌航空大学科技学院校徽", "link": "https://baike.baidu.com/item/x"},
+                entity,
+            )
+        )
+        self.assertFalse(
+            _matches_entity(
+                {"title": "校园风光_学校概况_南昌航空大学", "link": "https://www.nchu.edu.cn/xxgk/xyfg"},
+                entity,
+            )
+        )
+
     def test_bounded_float_always_receives_explicit_bounds(self):
         self.assertEqual(0.0, _bounded_float("not-a-score", 0.0, 0.0, 1.0))
         self.assertEqual(1.0, _bounded_float(2, 0.0, 0.0, 1.0))

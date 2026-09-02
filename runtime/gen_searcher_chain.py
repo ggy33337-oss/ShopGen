@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error, request
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from infra.logger import generation_stage, write_generation_event
 from knowledge.models import KnowledgeContext
@@ -123,6 +123,7 @@ class GenSearcherImageChain:
             )
 
         trajectory_id = str(task_id or uuid.uuid4().hex)
+        entity_hint = _extract_entity_hint(user_input)
         image_map: dict[str, dict[str, str]] = {}
         evidence: list[dict[str, str]] = []
         transcript: list[dict[str, str]] = []
@@ -184,6 +185,7 @@ class GenSearcherImageChain:
                     arguments,
                     image_map,
                     trajectory_id,
+                    entity_hint=entity_hint,
                 )
             tool_calls += 1
             image_search_done = image_search_done or tool == "image_search"
@@ -222,6 +224,7 @@ class GenSearcherImageChain:
                     {"query": _search_query(user_input)},
                     image_map,
                     trajectory_id,
+                    entity_hint=entity_hint,
                 )
             tool_calls += 1
             image_search_done = True
@@ -274,6 +277,7 @@ class GenSearcherImageChain:
                     },
                     image_map,
                     trajectory_id,
+                    entity_hint=entity_hint,
                 )
             tool_calls += 1
             image_search_done = True
@@ -600,7 +604,7 @@ class GenSearcherImageChain:
         selected.sort(key=_reference_rank, reverse=True)
         return selected
 
-    def _execute_tool(self, tool, arguments, image_map, trajectory_id):
+    def _execute_tool(self, tool, arguments, image_map, trajectory_id, entity_hint=""):
         if tool == "image_search":
             query = str(arguments.get("query") or "").strip() or "电商产品图片"
             visual_role = _normalize_visual_role(arguments.get("visual_role"), query)
@@ -614,6 +618,7 @@ class GenSearcherImageChain:
                 visual_role=visual_role,
                 search_layer=search_layer,
                 selection_goal=selection_goal,
+                entity_hint=entity_hint,
             )
             registered = {}
             evidence = []
@@ -845,6 +850,35 @@ def _normalize_final_action(action):
 def _search_query(user_input):
     words = re.findall(r"[\w\u4e00-\u9fff-]+", str(user_input or ""))
     return " ".join(words[:8]) or "电商产品视觉参考"
+
+
+def _extract_entity_hint(value):
+    """Extract the longest named institution/brand-like subject for search filtering."""
+    text = str(value or "").strip()
+    candidates = re.findall(
+        r"[\u4e00-\u9fffA-Za-z0-9·()（）]{2,40}(?:大学科技学院|科技学院|学院|大学|学校)",
+        text,
+    )
+    if not candidates:
+        return ""
+    candidate = max(candidates, key=len)
+    candidate = re.sub(r"^(?:请|帮我|生成|设计|制作|做|为|给我|一张|一幅)+", "", candidate)
+    return candidate.strip()
+
+
+def _normalized_entity_text(value):
+    return re.sub(r"[\s_·\\/\\-]+", "", unquote(str(value or "")).casefold())
+
+
+def _matches_entity(item, entity_hint):
+    if not entity_hint:
+        return True
+    target = _normalized_entity_text(entity_hint)
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "source", "link", "pageUrl", "page_url", "snippet", "description")
+    )
+    return bool(target and target in _normalized_entity_text(haystack))
 
 
 def _safe_tool_arguments(arguments):
@@ -1099,27 +1133,65 @@ def _image_search(
     visual_role="general",
     search_layer=0,
     selection_goal="",
+    entity_hint="",
 ):
     endpoint = str(values.get("IMAGE_SEARCH_API_BASE_URL") or "").strip()
     api_key = str(values.get("SERPER_KEY_ID") or values.get("SEARCH_API_KEY") or "").strip()
     if not endpoint or not api_key:
         return []
-    try:
-        with generation_stage(
-            "chain_three.image_search_http",
-            endpoint=_safe_url(endpoint),
-            query=str(query or "")[:500],
-            result_limit=limit,
-        ):
-            data = _post_json(
-                endpoint,
-                {"q": query[:500], "num": limit},
-                api_key,
-                DEFAULT_SEARCH_TIMEOUT,
-            )
-        raw_items = data.get("images") or data.get("results") or []
-    except Exception:
-        return []
+    def fetch_results(search_query, refined=False):
+        try:
+            with generation_stage(
+                "chain_three.image_search_http",
+                endpoint=_safe_url(endpoint),
+                query=str(search_query or "")[:500],
+                result_limit=limit,
+                refined=refined,
+            ):
+                data = _post_json(
+                    endpoint,
+                    {"q": str(search_query or "")[:500], "num": limit},
+                    api_key,
+                    DEFAULT_SEARCH_TIMEOUT,
+                )
+            return data.get("images") or data.get("results") or []
+        except Exception:
+            return []
+
+    raw_items = fetch_results(query)
+    filtered_items = [item for item in raw_items if isinstance(item, dict) and _matches_entity(item, entity_hint)]
+    rejected_items = [item for item in raw_items if isinstance(item, dict) and not _matches_entity(item, entity_hint)]
+    if entity_hint and rejected_items:
+        refined_query = f'"{entity_hint}" {query}'.strip()
+        refined_items = fetch_results(refined_query, refined=True)
+        existing_urls = {
+            str(item.get("imageUrl") or item.get("image_url") or item.get("url") or item.get("thumbnailUrl") or "").strip()
+            for item in filtered_items
+            if isinstance(item, dict)
+        }
+        for item in refined_items:
+            if not isinstance(item, dict) or not _matches_entity(item, entity_hint):
+                continue
+            item_url = str(
+                item.get("imageUrl")
+                or item.get("image_url")
+                or item.get("url")
+                or item.get("thumbnailUrl")
+                or ""
+            ).strip()
+            if not item_url or item_url in existing_urls:
+                continue
+            filtered_items.append(item)
+            existing_urls.add(item_url)
+    write_generation_event(
+        "chain_three.image_search_filter",
+        "completed",
+        entity_hint=entity_hint,
+        raw_count=len(raw_items),
+        accepted_count=len(filtered_items),
+        rejected_count=len(rejected_items),
+        refined=bool(entity_hint and rejected_items),
+    )
     save_dir = Path(
         str(
             values.get("GEN_SEARCHER_IMAGE_DIR")
@@ -1132,7 +1204,7 @@ def _image_search(
     seen = set()
     seen_content = set()
     retrieved_at = datetime.now(timezone.utc).isoformat()
-    for item in raw_items[: max(limit, 1)]:
+    for item in filtered_items[: max(limit, 1)]:
         if not isinstance(item, dict):
             continue
         url = str(

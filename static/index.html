@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>基于多模态大模型的电商海报生成与文案协作系统</title>
-  <link rel="stylesheet" href="/static/styles.css?v=202608311230">
+  <link rel="stylesheet" href="/static/styles.css?v=202609012245">
 </head>
 <body>
   <main class="app-shell">
@@ -66,6 +66,16 @@
               <span class="reference-icon">＋</span>
               <span>添加本轮参考资料</span>
             </label>
+            <button
+              class="model-switcher-button"
+              id="modelSwitcherButton"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+            >
+              <span class="model-switcher-icon" aria-hidden="true">◌</span>
+              <span id="selectedModelLabel">自动匹配</span>
+            </button>
             <span class="paste-hint">支持 Ctrl+V 粘贴图片，仅用于本次生成</span>
           </div>
         </div>
@@ -77,6 +87,69 @@
           accept=".png,.jpg,.jpeg,.pdf,.docx,image/png,image/jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         >
         <button class="send-button" type="submit" id="sendButton">发送</button>
+        <section
+          class="model-picker"
+          id="modelPicker"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="modelPickerTitle"
+          hidden
+        >
+          <div class="model-picker-header">
+            <div>
+              <h2 id="modelPickerTitle">生成模型</h2>
+              <p>默认由智能规划自动匹配</p>
+            </div>
+            <label class="model-auto-toggle">
+              <span id="modelAutoLabel">自动匹配</span>
+              <input id="autoModelToggle" type="checkbox" checked>
+              <span class="model-toggle-track" aria-hidden="true"></span>
+            </label>
+          </div>
+          <div class="model-tabs" role="tablist" aria-label="生成类型">
+            <button class="model-tab active" type="button" role="tab" aria-selected="true">图片 · 4</button>
+            <button class="model-tab" type="button" role="tab" aria-selected="false" disabled>视频 · 0</button>
+            <button class="model-tab" type="button" role="tab" aria-selected="false" disabled>音频 · 0</button>
+          </div>
+          <div class="model-option-list">
+            <label class="model-option">
+              <input type="radio" name="imageModel" value="" checked>
+              <span class="model-option-icon auto" aria-hidden="true">✦</span>
+              <span class="model-option-copy">
+                <strong>智能规划自动匹配</strong>
+                <small>根据请求和参考图选择模型</small>
+              </span>
+              <span class="model-option-check" aria-hidden="true"></span>
+            </label>
+            <label class="model-option">
+              <input type="radio" name="imageModel" value="wanx2.1-imageedit">
+              <span class="model-option-icon wanx" aria-hidden="true">W</span>
+              <span class="model-option-copy">
+                <strong>Wanx 2.1</strong>
+                <small>图片编辑 · 支持参考图</small>
+              </span>
+              <span class="model-option-check" aria-hidden="true"></span>
+            </label>
+            <label class="model-option">
+              <input type="radio" name="imageModel" value="qwen-image-3.0">
+              <span class="model-option-icon qwen" aria-hidden="true">Q</span>
+              <span class="model-option-copy">
+                <strong>Qwen Image 3.0</strong>
+                <small>图片生成与编辑 · 兼容旧链路</small>
+              </span>
+              <span class="model-option-check" aria-hidden="true"></span>
+            </label>
+            <label class="model-option">
+              <input type="radio" name="imageModel" value="gpt-image-2">
+              <span class="model-option-icon gpt" aria-hidden="true">G</span>
+              <span class="model-option-copy">
+                <strong>GPT Image</strong>
+                <small>图片生成与编辑 · OpenAI 兼容接口</small>
+              </span>
+              <span class="model-option-check" aria-hidden="true"></span>
+            </label>
+          </div>
+        </section>
       </form>
     </section>
   </main>
@@ -139,6 +212,6 @@
     </div>
   </section>
 
-  <script src="/static/app.js?v=202608311230"></script>
+  <script src="/static/app.js?v=202609012245"></script>
 </body>
 </html>

@@ -19,8 +19,19 @@ class PosterGenerationRequest(BaseModel):
     poster_type: str = Field(default="商业海报", max_length=MAX_SHORT_TEXT_LENGTH)
     campaign: str = Field(default="", max_length=MAX_TEXT_LENGTH)
     target_audience: str = Field(default="", max_length=MAX_SHORT_TEXT_LENGTH)
+    image_model: str = Field(default="", max_length=80)
 
     @field_validator("user_text", "conversation_id", "file_name", "file_content_type", "poster_type", "campaign", "target_audience", mode="before")
     @classmethod
     def clean_text(cls, value: Any) -> str:
         return normalize_text(value)
+
+    @field_validator("image_model", mode="before")
+    @classmethod
+    def clean_image_model(cls, value: Any) -> str:
+        value = normalize_text(value)
+        if value.lower() == "auto":
+            return ""
+        if value and not value.lower().startswith(("qwen", "wan", "wanx", "gpt-image")):
+            raise ValueError("图片模型必须使用千问、Wanx 或 GPT Image 模型")
+        return value

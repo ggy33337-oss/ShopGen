@@ -13,6 +13,12 @@ const currentConversationTitle = document.querySelector("#currentConversationTit
 const fileInput = document.querySelector("#fileInput");
 const attachmentRow = document.querySelector("#attachmentRow");
 const attachmentList = document.querySelector("#attachmentList");
+const modelSwitcherButton = document.querySelector("#modelSwitcherButton");
+const selectedModelLabel = document.querySelector("#selectedModelLabel");
+const modelPicker = document.querySelector("#modelPicker");
+const autoModelToggle = document.querySelector("#autoModelToggle");
+const modelAutoLabel = document.querySelector("#modelAutoLabel");
+const imageModelInputs = Array.from(document.querySelectorAll('input[name="imageModel"]'));
 const openKnowledgeButton = document.querySelector("#openKnowledgeButton");
 const closeKnowledgeButton = document.querySelector("#closeKnowledgeButton");
 const knowledgeDialog = document.querySelector("#knowledgeDialog");
@@ -36,6 +42,16 @@ let conversationId = localStorage.getItem("conversation_id") || "default";
 let conversationCache = [];
 let selectedAttachments = [];
 const MAX_REFERENCE_ATTACHMENTS = 3;
+const IMAGE_MODEL_LABELS = new Map([
+  ["", "自动匹配"],
+  ["wanx2.1-imageedit", "Wanx 2.1"],
+  ["qwen-image-3.0", "Qwen Image 3.0"],
+  ["gpt-image-2", "GPT Image 2"],
+]);
+let selectedImageModel = localStorage.getItem("image_model") || "";
+if (!IMAGE_MODEL_LABELS.has(selectedImageModel)) {
+  selectedImageModel = "";
+}
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 860px)").matches;
@@ -45,11 +61,31 @@ function setBusy(isBusy) {
   sendButton.disabled = isBusy;
   messageInput.disabled = isBusy;
   fileInput.disabled = isBusy;
+  modelSwitcherButton.disabled = isBusy;
   sendButton.textContent = isBusy ? "生成中" : "发送";
 }
 
 function setNewChatBusy(isBusy) {
   newChatButton.disabled = isBusy;
+}
+
+function updateModelPicker() {
+  imageModelInputs.forEach((input) => {
+    input.checked = input.value === selectedImageModel;
+  });
+  autoModelToggle.checked = selectedImageModel === "";
+  modelAutoLabel.textContent = selectedImageModel ? "手动指定" : "自动匹配";
+  selectedModelLabel.textContent = IMAGE_MODEL_LABELS.get(selectedImageModel) || "自动匹配";
+}
+
+function closeModelPicker() {
+  modelPicker.hidden = true;
+  modelSwitcherButton.setAttribute("aria-expanded", "false");
+}
+
+function toggleModelPicker() {
+  modelPicker.hidden = !modelPicker.hidden;
+  modelSwitcherButton.setAttribute("aria-expanded", String(!modelPicker.hidden));
 }
 
 function setKnowledgeBusy(isBusy) {
@@ -194,6 +230,7 @@ async function sendMessage(message) {
     body: JSON.stringify({
       message,
       conversation_id: conversationId,
+      image_model: selectedImageModel,
     }),
   });
 
@@ -210,6 +247,7 @@ async function sendPosterMessage(message, files) {
   formData.append("conversation_id", conversationId);
   formData.append("poster_type", "商业海报");
   formData.append("campaign", message);
+  formData.append("image_model", selectedImageModel);
   files.forEach((file) => formData.append("files", file));
 
   const response = await fetch("/api/poster/generate", {
@@ -221,7 +259,26 @@ async function sendPosterMessage(message, files) {
     throw new Error(await readErrorMessage(response));
   }
 
-  return response.json();
+  const task = await response.json();
+  const taskId = task.task_id;
+  if (!taskId) {
+    throw new Error("服务器未返回图片生成任务编号。");
+  }
+
+  while (true) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    const taskResponse = await fetch(`/api/poster/tasks/${encodeURIComponent(taskId)}`);
+    if (!taskResponse.ok) {
+      throw new Error(await readErrorMessage(taskResponse));
+    }
+    const taskState = await taskResponse.json();
+    if (taskState.status === "completed") {
+      return taskState.result;
+    }
+    if (["failed", "cancelled"].includes(taskState.status)) {
+      throw new Error(taskState.error || "图片生成任务失败。");
+    }
+  }
 }
 
 async function readErrorMessage(response) {
@@ -634,6 +691,39 @@ chatForm.addEventListener("submit", async (event) => {
 });
 
 fileInput.addEventListener("change", updateAttachmentView);
+modelSwitcherButton.addEventListener("click", toggleModelPicker);
+imageModelInputs.forEach((input) => {
+  input.addEventListener("change", () => {
+    selectedImageModel = input.value;
+    localStorage.setItem("image_model", selectedImageModel);
+    updateModelPicker();
+    closeModelPicker();
+  });
+});
+autoModelToggle.addEventListener("change", () => {
+  if (autoModelToggle.checked) {
+    selectedImageModel = "";
+    localStorage.setItem("image_model", selectedImageModel);
+    updateModelPicker();
+    return;
+  }
+  if (!selectedImageModel) {
+    selectedImageModel = "wanx2.1-imageedit";
+    localStorage.setItem("image_model", selectedImageModel);
+    updateModelPicker();
+  }
+});
+document.addEventListener("click", (event) => {
+  if (!modelPicker.hidden && !modelPicker.contains(event.target) && !modelSwitcherButton.contains(event.target)) {
+    closeModelPicker();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !modelPicker.hidden) {
+    closeModelPicker();
+    modelSwitcherButton.focus();
+  }
+});
 openKnowledgeButton.addEventListener("click", openKnowledgeDialog);
 closeKnowledgeButton.addEventListener("click", closeKnowledgeDialog);
 knowledgeFileInput.addEventListener("change", () => {
@@ -746,3 +836,4 @@ messageInput.addEventListener("keydown", (event) => {
 });
 
 initializeApp();
+updateModelPicker();

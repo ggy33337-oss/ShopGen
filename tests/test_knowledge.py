@@ -11,6 +11,7 @@ from knowledge.chunker import build_knowledge_chunks, estimate_tokens, split_kno
 from knowledge.document_parser import parse_knowledge_file
 from knowledge.models import KnowledgeElement, KnowledgeImageRecord
 from knowledge.qdrant_knowledge_base import QdrantKnowledgeBase
+from knowledge.quality import is_meaningful_knowledge_text
 from services.knowledge_service import KnowledgeService
 
 
@@ -34,6 +35,44 @@ class FailingImageGateway(FakeRetrievalGateway):
     def embed_image(self, image_data_url, description=""):
         del image_data_url, description
         raise RuntimeError("image embedding failed")
+
+
+class FakeReranker:
+    def rerank(self, query, candidates, top_n=3):
+        del query
+        priorities = {
+            "paragraph": 0.95,
+            "image": 0.94,
+            "semantic": 0.90,
+            "heading": 0.75,
+            "title": 0.70,
+        }
+        ranked = []
+        for candidate in candidates:
+            item = dict(candidate)
+            item["vector_score"] = float(item.get("score") or 0.0)
+            item["rerank_score"] = priorities.get(item.get("chunk_type"), 0.69)
+            item["score"] = item["rerank_score"]
+            ranked.append(item)
+        ranked.sort(key=lambda item: item["rerank_score"], reverse=True)
+        return ranked[:top_n]
+
+
+class FixedScoreReranker:
+    def __init__(self, scores):
+        self.scores = scores
+
+    def rerank(self, query, candidates, top_n=3):
+        del query
+        ranked = []
+        for candidate in candidates:
+            item = dict(candidate)
+            item["vector_score"] = float(item.get("score") or 0.0)
+            item["rerank_score"] = float(self.scores[item["chunk_id"]])
+            item["score"] = item["rerank_score"]
+            ranked.append(item)
+        ranked.sort(key=lambda item: item["rerank_score"], reverse=True)
+        return ranked[:top_n]
 
 
 class PaginatedScrollClient:
@@ -123,6 +162,26 @@ class KnowledgeChunkerTests(unittest.TestCase):
         )
         self.assertIn("| 属性 | 内容 |", parsed.elements[-1].text)
 
+    def test_drops_numeric_only_heading_during_chunking(self):
+        elements = (
+            KnowledgeElement("heading", "1.00", 37, "1.00"),
+            KnowledgeElement("paragraph", "品牌标准蓝为 #0057B8。", 37, "1.00"),
+        )
+
+        chunks = build_knowledge_chunks("source-4", "品牌规范", elements)
+
+        self.assertFalse(
+            any(chunk.chunk_type == "heading" and chunk.title == "1.00" for chunk in chunks)
+        )
+        self.assertTrue(any("#0057B8" in chunk.content for chunk in chunks))
+
+    def test_quality_filter_keeps_meaningful_numeric_table_and_rejects_garbage(self):
+        table = "| 温度/℃ | 200 | 300 |\n| --- | --- | --- |\n| 氨含量/% | 89.9 | 71.0 |"
+
+        self.assertTrue(is_meaningful_knowledge_text(table, "反应条件表"))
+        self.assertFalse(is_meaningful_knowledge_text("1.00", "1.00"))
+        self.assertFalse(is_meaningful_knowledge_text("锟斤拷锟斤拷 000", "乱码"))
+
 
 class KnowledgeServiceTests(unittest.TestCase):
     def test_file_size_limit_comes_from_config(self):
@@ -149,6 +208,7 @@ class QdrantKnowledgeBaseTests(unittest.TestCase):
             },
             client=QdrantClient(":memory:"),
             retrieval_gateway=FakeRetrievalGateway(),
+            reranker=FakeReranker(),
         )
 
     def test_stores_text_and_image_in_separate_collections_and_searches_both(self):
@@ -175,6 +235,8 @@ class QdrantKnowledgeBaseTests(unittest.TestCase):
         self.assertTrue(any(item["chunk_type"] == "paragraph" for item in matches))
         self.assertTrue(any(item["chunk_type"] == "image" for item in matches))
         self.assertTrue(all(item["category"] == "鞋服" for item in matches))
+        self.assertTrue(all(item["rerank_score"] >= 0.68 for item in matches))
+        self.assertTrue(all("vector_score" in item for item in matches))
 
     def test_delete_source_removes_its_vectors(self):
         chunks = split_knowledge_text("coffee-source", "咖啡豆", "深烘焙咖啡豆。", category="食品")
@@ -229,6 +291,76 @@ class QdrantKnowledgeBaseTests(unittest.TestCase):
         sources = knowledge_base.list_sources()
 
         self.assertEqual(606, sources[0]["vector_count"])
+
+    def test_filters_low_information_reranks_top_three_and_applies_threshold(self):
+        reranker = FixedScoreReranker(
+            {
+                "direct": 0.91,
+                "supporting": 0.72,
+                "below-threshold": 0.54,
+                "irrelevant": 0.30,
+            }
+        )
+        knowledge_base = QdrantKnowledgeBase(
+            values={
+                "QWEN_EMBEDDING_DIMENSION": "4",
+                "KNOWLEDGE_RECALL_LIMIT": "20",
+                "KNOWLEDGE_RERANK_TOP_N": "3",
+                "KNOWLEDGE_RERANK_MIN_SCORE": "0.55",
+            },
+            client=object(),
+            retrieval_gateway=FakeRetrievalGateway(),
+            reranker=reranker,
+        )
+        candidates = [
+            make_candidate("direct", "品牌标准蓝为 #0057B8。", 0.80),
+            make_candidate("supporting", "蓝色背景应保持纯净。", 0.79),
+            make_candidate("below-threshold", "蓝色是一种冷色调。", 0.78),
+            make_candidate("irrelevant", "商品支持顺丰发货。", 0.77),
+            make_candidate("numeric", "1.00", 0.95, title="1.00"),
+        ]
+        knowledge_base.retrieve_candidates = lambda query, limit, category: candidates
+
+        matches = knowledge_base.search_matches("背景改成品牌蓝色", limit=5)
+
+        self.assertEqual(["direct", "supporting"], [item["chunk_id"] for item in matches])
+        self.assertTrue(all(item["rerank_score"] >= 0.55 for item in matches))
+        self.assertNotIn("numeric", [item["chunk_id"] for item in matches])
+
+    def test_returns_no_match_when_every_rerank_score_is_below_threshold(self):
+        knowledge_base = QdrantKnowledgeBase(
+            values={
+                "QWEN_EMBEDDING_DIMENSION": "4",
+                "KNOWLEDGE_RERANK_MIN_SCORE": "0.55",
+            },
+            client=object(),
+            retrieval_gateway=FakeRetrievalGateway(),
+            reranker=FixedScoreReranker({"irrelevant": 0.42}),
+        )
+        knowledge_base.retrieve_candidates = lambda query, limit, category: [
+            make_candidate("irrelevant", "商品支持顺丰发货。", 0.88)
+        ]
+
+        context = knowledge_base.search("背景改成品牌蓝色", limit=1)
+
+        self.assertEqual("no_match", context.status)
+        self.assertEqual((), context.matches)
+
+
+def make_candidate(chunk_id, content, score, title="测试资料"):
+    return {
+        "source_id": "source",
+        "chunk_id": chunk_id,
+        "title": title,
+        "content": content,
+        "chunk_type": "paragraph",
+        "category": "测试",
+        "source_filename": "test.docx",
+        "source_title": "测试资料",
+        "page_number": 1,
+        "section": "",
+        "score": score,
+    }
 
 
 if __name__ == "__main__":

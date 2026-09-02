@@ -2,7 +2,10 @@
 
 import base64
 from dataclasses import dataclass
+from io import BytesIO
 from urllib import parse, request
+
+from PIL import Image, ImageOps
 
 from llm.qwen_client import (
     QwenGateway,
@@ -18,6 +21,8 @@ MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024
 REFERENCE_IMAGE_TIMEOUT = 20
 MAX_REFERENCE_IMAGES = 1
 REFERENCE_ANALYSIS_TIMEOUT = 80
+DEFAULT_PLANNER_MAX_IMAGE_SIDE = 768
+DEFAULT_PLANNER_JPEG_QUALITY = 80
 SUPPORTED_IMAGE_TYPES = {
     "image/png",
     "image/jpeg",
@@ -176,6 +181,65 @@ def parse_data_url(data_url):
         content_type=content_type,
         source_url="data-url",
     )
+
+
+def prepare_visual_planner_image(values, image_data_url):
+    """Create a compact planner-only image while preserving the original data URL."""
+    original_url = str(image_data_url or "").strip()
+    reference = parse_data_url(original_url)
+    if not reference:
+        return original_url, {
+            "prepared": False,
+            "reason": "unsupported_or_invalid_data_url",
+        }
+
+    try:
+        with Image.open(BytesIO(reference.content)) as source:
+            source = ImageOps.exif_transpose(source).convert("RGB")
+            original_size = list(source.size)
+            max_side = _planner_int_setting(
+                values,
+                "QWEN_VL_MAX_IMAGE_SIDE",
+                DEFAULT_PLANNER_MAX_IMAGE_SIDE,
+                minimum=256,
+                maximum=1536,
+            )
+            quality = _planner_int_setting(
+                values,
+                "QWEN_VL_IMAGE_QUALITY",
+                DEFAULT_PLANNER_JPEG_QUALITY,
+                minimum=50,
+                maximum=95,
+            )
+            source.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            source.save(output, format="JPEG", quality=quality, optimize=True)
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            planner_url = f"data:image/jpeg;base64,{encoded}"
+            return planner_url, {
+                "prepared": True,
+                "original_bytes": len(reference.content),
+                "planner_bytes": len(output.getvalue()),
+                "original_size": original_size,
+                "planner_size": list(source.size),
+                "planner_content_type": "image/jpeg",
+                "max_image_side": max_side,
+                "jpeg_quality": quality,
+            }
+    except Exception as exc:
+        return original_url, {
+            "prepared": False,
+            "reason": "image_transcode_failed",
+            "error_type": type(exc).__name__,
+        }
+
+
+def _planner_int_setting(values, key, default, minimum, maximum):
+    try:
+        value = int((values or {}).get(key) or default)
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
 
 
 def normalize_content_type(content_type):

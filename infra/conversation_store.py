@@ -62,6 +62,21 @@ SCHEMA_STATEMENTS = (
             ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """,
+    """
+    CREATE TABLE IF NOT EXISTS visual_edit_sessions (
+        conversation_id VARCHAR(64) NOT NULL,
+        root_image_url TEXT NOT NULL,
+        latest_result_url TEXT NOT NULL,
+        revision INT UNSIGNED NOT NULL DEFAULT 0,
+        created_at DATETIME(6) NOT NULL,
+        updated_at DATETIME(6) NOT NULL,
+        PRIMARY KEY (conversation_id),
+        CONSTRAINT fk_visual_edit_sessions_conversation
+            FOREIGN KEY (conversation_id)
+            REFERENCES conversations(conversation_id)
+            ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """,
 )
 
 
@@ -107,6 +122,7 @@ def create_empty_conversation(conversation_id):
         "updated_at": now,
         "messages": [],
         "visual_history": [],
+        "visual_edit_session": {},
     }
 
 
@@ -182,6 +198,7 @@ async def load_conversation(conversation_id):
             "updated_at": serialize_datetime(row["updated_at"]),
             "messages": await load_messages(connection, safe_id),
             "visual_history": await load_visual_history(connection, safe_id),
+            "visual_edit_session": await load_visual_edit_session(connection, safe_id),
         }
 
 
@@ -221,6 +238,29 @@ async def load_visual_history(connection, conversation_id):
     return [normalize_visual_record(dict(row)) for row in result.mappings().all()]
 
 
+async def load_visual_edit_session(connection, conversation_id):
+    result = await connection.execute(
+        text(
+            """
+            SELECT root_image_url, latest_result_url, revision, created_at, updated_at
+            FROM visual_edit_sessions
+            WHERE conversation_id = :conversation_id
+            """
+        ),
+        {"conversation_id": conversation_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        return {}
+    return {
+        "root_image_url": str(row["root_image_url"] or "").strip(),
+        "latest_result_url": str(row["latest_result_url"] or "").strip(),
+        "revision": int(row["revision"] or 0),
+        "created_at": serialize_datetime(row["created_at"]),
+        "updated_at": serialize_datetime(row["updated_at"]),
+    }
+
+
 async def save_conversation(conversation):
     conversation_id = normalize_conversation_id(conversation.get("conversation_id"))
     title = conversation.get("title") or build_conversation_title(conversation)
@@ -247,6 +287,10 @@ async def save_conversation(conversation):
         )
         await connection.execute(
             text("DELETE FROM visual_history WHERE conversation_id = :conversation_id"),
+            {"conversation_id": conversation_id},
+        )
+        await connection.execute(
+            text("DELETE FROM visual_edit_sessions WHERE conversation_id = :conversation_id"),
             {"conversation_id": conversation_id},
         )
         await insert_messages(connection, conversation_id, conversation.get("messages", []))
@@ -331,6 +375,58 @@ async def append_visual_history(conversation_id, visual_record):
             {"updated_at": datetime.now(), "conversation_id": safe_id},
         )
     return await load_conversation(safe_id)
+
+
+async def get_visual_edit_session(conversation_id):
+    safe_id = normalize_conversation_id(conversation_id)
+    engine = await get_ready_engine()
+    async with engine.connect() as connection:
+        return await load_visual_edit_session(connection, safe_id)
+
+
+async def save_visual_edit_session(
+    conversation_id,
+    root_image_url,
+    latest_result_url,
+    revision,
+):
+    safe_id = normalize_conversation_id(conversation_id)
+    root_image_url = str(root_image_url or "").strip()
+    latest_result_url = str(latest_result_url or "").strip()
+    revision = max(0, int(revision or 0))
+    if not root_image_url or not latest_result_url or revision < 1:
+        raise ValueError("图片编辑会话缺少根参考图、最新结果或有效修订号。")
+    now = datetime.now()
+    engine = await get_ready_engine()
+    async with engine.begin() as connection:
+        await ensure_conversation(connection, safe_id)
+        await connection.execute(
+            text(
+                """
+                INSERT INTO visual_edit_sessions (
+                    conversation_id, root_image_url, latest_result_url,
+                    revision, created_at, updated_at
+                ) VALUES (
+                    :conversation_id, :root_image_url, :latest_result_url,
+                    :revision, :created_at, :updated_at
+                )
+                ON DUPLICATE KEY UPDATE
+                    root_image_url = VALUES(root_image_url),
+                    latest_result_url = VALUES(latest_result_url),
+                    revision = VALUES(revision),
+                    updated_at = VALUES(updated_at)
+                """
+            ),
+            {
+                "conversation_id": safe_id,
+                "root_image_url": root_image_url,
+                "latest_result_url": latest_result_url,
+                "revision": revision,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+    return await get_visual_edit_session(safe_id)
 
 
 async def insert_visual_history(connection, conversation_id, visual_history):

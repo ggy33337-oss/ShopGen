@@ -4,6 +4,7 @@ import re
 import uuid
 
 from knowledge.models import KnowledgeChunk, KnowledgeElement
+from knowledge.quality import is_meaningful_knowledge_text
 
 
 DEFAULT_SAFETY_MAX_TOKENS = 900
@@ -71,7 +72,11 @@ def build_knowledge_chunks(
         pending_section = ""
 
     for element in elements:
-        if element.element_type == "image" or not normalize_text(element.text):
+        if (
+            element.element_type == "image"
+            or not normalize_text(element.text)
+            or not is_meaningful_knowledge_text(element.text)
+        ):
             continue
         if element.element_type == "heading":
             flush_pending()
@@ -273,7 +278,7 @@ def split_markdown_table(text, safety_max_tokens):
 
 def should_index_heading(element):
     heading = normalize_text(element.text)
-    return bool(heading) and (
+    return is_meaningful_knowledge_text(heading) and (
         int(element.page_number or 0) == 0
         or bool(INDEXED_HEADING_PATTERN.match(heading))
     )

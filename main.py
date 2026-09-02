@@ -10,6 +10,9 @@ import uvicorn
 from services.chat_service import ask
 
 
+DEFAULT_WEB_PORT = 8002
+
+
 def run_cli():
     user_input = input("请输入你的问题：")
     response, model_name, latency_ms, conversation_id = asyncio.run(ask(user_input))
@@ -31,7 +34,7 @@ def main():
     parser = argparse.ArgumentParser(description="电商文案与图片生成助手")
     parser.add_argument("--cli", action="store_true", help="使用命令行单轮问答模式")
     parser.add_argument("--host", default="127.0.0.1", help="Web 服务监听地址")
-    parser.add_argument("--port", type=int, default=8000, help="Web 服务监听端口")
+    parser.add_argument("--port", type=int, default=DEFAULT_WEB_PORT, help="Web 服务监听端口")
     args = parser.parse_args()
 
     if args.cli:

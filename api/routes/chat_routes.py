@@ -14,6 +14,7 @@ async def chat(request: ChatRequest):
     response, _model_name, latency_ms, conversation_id = await ask(
         request.message,
         request.conversation_id,
+        image_model=request.image_model,
     )
     if isinstance(response, dict):
         text = response.get("text", "")

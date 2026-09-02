@@ -48,6 +48,13 @@ async def remove_conversation(conversation_id: str):
         extract_image_id(item.get("image_url"))
         for item in conversation.get("visual_history", [])
     }
+    edit_session = conversation.get("visual_edit_session", {})
+    image_ids.update(
+        {
+            extract_image_id(edit_session.get("root_image_url")),
+            extract_image_id(edit_session.get("latest_result_url")),
+        }
+    )
     image_ids.discard("")
     if image_ids:
         try:

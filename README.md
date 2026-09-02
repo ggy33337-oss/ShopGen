@@ -7,8 +7,8 @@
 - 单一编排核心：`runtime/orchestrator.py` 统一负责意图判断、链路路由、模型调用和状态轨迹。
 - 会话级记忆：使用 MySQL 持久化会话、消息和绘画历史，使用 Redis 保存图片二进制。
 - 三链路路由：历史图修改走链路一，本轮上传图走链路二，无图新请求进入链路三占位。
-- 全千问模型：文本与意图使用 `qwen-plus`，视觉规划使用 `qwen3-vl-plus`，图片生成与编辑使用 `qwen-image-3.0-pro`。
-- 向量知识库：文档先识别标题、段落、表格和图片，再按完整语义边界分块，使用 `qwen3-vl-embedding` 向量化并存入 Qdrant。
+- 文本与意图使用 `qwen3.8-max`，视觉规划使用 `qwen3-vl-plus`，图片生成与编辑支持 `qwen-image-3.0`、Wanx 2.1 和 GPT Image。
+- 向量知识库：文档先清理低信息内容并按完整语义边界分块，使用 `qwen3-vl-embedding` 向量化写入 Qdrant；查询时召回 Top 20，再由 `qwen3-rerank` 重排、阈值过滤并最多保留 3 条。
 - 显式占位：无参考图的链路三仍返回 `placeholder`，暂不调用生图模型。
 
 ## 核心功能
@@ -16,7 +16,7 @@
 | 功能 | 说明 |
 | --- | --- |
 | 普通聊天 | 支持电商运营建议、商品卖点、标题和营销文案生成 |
-| 图片生成 | 链路一和链路二调用千问图片生成与编辑模型 |
+| 图片生成 | 链路一和链路二支持切换 Qwen Image、Wanx 2.1 和 GPT Image |
 | 图文混合 | 同时返回用户可读文案和生成图片 |
 | 图片连续修改 | 基于当前会话最近图片继续换背景、换颜色或优化风格 |
 | 参考资料上传 | 支持 `png`、`jpg`、`jpeg`、`pdf`、`docx` |
@@ -54,6 +54,8 @@ FastAPI 路由层
 MySQL 会话存储 + Redis 图片缓存 + JSONL 轨迹日志
 ```
 
+生成任务的逐阶段诊断日志写入 `logs/generation.jsonl`。每条记录都包含统一的 `task_id`，可查看路由选择、知识检索、提示词规划、图片模型每次请求、重试、超时、HTTP 状态、服务端请求编号、缓存及最终失败阶段。请求正文中的 Base64 图片、API Key 和 Authorization 会自动脱敏；`logs/llm.jsonl` 继续保存成功任务摘要。
+
 ## 普通图文生成流程
 
 ```text
@@ -69,7 +71,7 @@ MySQL 会话存储 + Redis 图片缓存 + JSONL 轨迹日志
   ↓
 否 → 链路三占位（暂不调用生图模型）
   ↓
-千问视觉规划 + 千问图片生成/编辑 → 写入 messages / visual_history
+千问视觉规划 + Wanx 2.1 图片生成/编辑 → 写入 messages / visual_history
 ```
 
 ## 海报生成流程
@@ -85,7 +87,7 @@ File Parser 解析图片、PDF、DOCX 中的文本和图片
   ↓
 知识库向量检索 + 千问视觉规划
   ↓
-千问图片生成/编辑 → 返回海报文案、图片和链路元数据
+Wanx 2.1 图片生成/编辑 → 返回海报文案、图片和链路元数据
 ```
 
 ## 关键工程设计
@@ -108,9 +110,21 @@ File Parser 解析图片、PDF、DOCX 中的文本和图片
 
 ### 3. 如何处理模型超时和断连
 
-图片生成和图片编辑通常耗时较长。千问图片网关对限流、服务端错误和连接超时进行有限重试；配置错误、鉴权失败或模型无有效图片输出时明确返回失败，不伪装成成功。
+图片生成和图片编辑通常耗时较长。Wanx 2.1 通过异步任务提交与状态轮询获取结果；配置错误、鉴权失败或模型无有效图片输出时明确返回失败，不伪装成成功。
 
-### 4. 为什么前端不显示模型名
+### 4. 链路二如何整合提示词优先级
+
+本轮上传图进入链路二后，视觉规划上下文按固定优先级组织：用户执行目标决定修改内容，上传图片决定未修改部分的视觉事实，业务参数只影响未明确指定的表现方式，知识库只补充空白信息，通用美化和负面约束优先级最低。低优先级信息不得覆盖高优先级信息。
+
+每次上传新参考图都会创建一条新的图片编辑链并生成第 1 版。系统将最初上传图单独保存为根参考图；用户第一次针对结果提出优化时，视觉规划模型会同时参考第 1 版结果与根参考图，用第 1 版结果定位明确的优化方向和范围，但最终图片模型只以根参考图为生成基准，未明确要求的区域按根图保持。如果用户继续针对第 2 版提出第 3 次修改，系统不再调用图片生成模型，直接返回“请重新上传参考图片并仔细规划提示词。”；重新上传图片后修订次数重置。
+
+知识检索不会再无条件采用向量 Top 1。Qdrant 先召回 20 条候选，系统过滤纯编号、乱码和空信息，`qwen3-rerank` 重排后只保留得分最高的 3 条，再使用 `KNOWLEDGE_RERANK_MIN_SCORE` 拒绝低相关结果。所有候选低于阈值时返回 `no_match`，不向视觉规划提示词注入知识。
+
+当前默认重排阈值 `0.55` 是使用项目内置的 10 类电商视觉查询、41 条人工标注候选进行初始校准的结果，不是通用常量。运行 `python -m scripts.calibrate_reranker` 可以使用当前模型和固定任务指令重新测量；上线前仍应使用真实业务反馈扩充标注集并重新校准。
+
+现有索引可以先使用 `python -m scripts.cleanup_knowledge_quality` 干运行审计，再使用 `python -m scripts.cleanup_knowledge_quality --apply` 删除确定无意义的向量点。查询不相关但内容本身有效的资料不会被永久删除，只会在本次检索中被 Reranker 拒绝。
+
+### 5. 为什么前端不显示模型名
 
 模型名称属于内部实现细节。面向用户时只展示生成结果和耗时，避免用户被模型名干扰。后端普通聊天接口也不再返回 `model` 字段。
 
@@ -147,8 +161,8 @@ static/                    前端页面、样式和交互逻辑
 FastAPI 自动生成接口文档：
 
 ```text
-http://127.0.0.1:8000/docs
-http://127.0.0.1:8000/openapi.json
+http://127.0.0.1:8002/docs
+http://127.0.0.1:8002/openapi.json
 ```
 
 核心接口：
@@ -156,7 +170,8 @@ http://127.0.0.1:8000/openapi.json
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
 | `/api/chat` | POST | 普通聊天、文案生成、图片生成、图片编辑 |
-| `/api/poster/generate` | POST | 上传参考资料并生成海报 |
+| `/api/poster/generate` | POST | 上传参考资料并提交海报生成任务，立即返回 `task_id` |
+| `/api/poster/tasks/{task_id}` | GET | 查询海报任务状态，完成后返回结果 |
 | `/api/images/{image_id}` | GET | 从 Redis 读取图片二进制 |
 | `/api/knowledge/upload` | POST | 上传文档或图片并写入向量库 |
 | `/api/knowledge/search` | POST | 向量化用户请求并检索相关资料 |
@@ -165,6 +180,8 @@ http://127.0.0.1:8000/openapi.json
 | `/api/conversations` | POST | 新建会话 |
 | `/api/conversations/{conversation_id}` | GET | 获取会话详情 |
 | `/api/conversations/{conversation_id}` | DELETE | 删除会话 |
+
+海报生成接口采用异步任务模式。`POST /api/poster/generate` 在上传完成后立即返回 `task_id`；前端或调用方轮询 `GET /api/poster/tasks/{task_id}`，当 `status` 为 `completed` 时读取 `result`，当 `status` 为 `failed` 时读取 `error`。
 
 普通聊天响应示例：
 
@@ -200,13 +217,13 @@ Windows PowerShell 推荐使用 UTF-8 启动脚本：
 访问地址：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8002
 ```
 
 指定端口：
 
 ```bash
-python main.py --host 127.0.0.1 --port 8000
+python main.py --host 127.0.0.1 --port 8002
 ```
 
 命令行模式：
@@ -222,13 +239,22 @@ python main.py --cli
 ```env
 DASHSCOPE_API_KEY="your_dashscope_key"
 MODEL_PROXY_URL=""
-QWEN_TEXT_MODEL="qwen-plus"
+QWEN_TEXT_MODEL="qwen3.8-max"
 QWEN_VL_MODEL="qwen3-vl-plus"
-QWEN_IMAGE_MODEL="qwen-image-3.0-pro"
+QWEN_IMAGE_MODEL="wanx2.1-imageedit"
+QWEN_IMAGE_TOTAL_TIMEOUT="420"
+OPENAI_IMAGE_API_KEY="your_openai_compatible_key"
+OPENAI_IMAGE_BASE_URL="https://api.openai.com/v1"
+OPENAI_IMAGE_MODEL="gpt-image-2"
+POSTER_TOTAL_TIMEOUT_SECONDS="480"
 QWEN_EMBEDDING_MODEL="qwen3-vl-embedding"
 QWEN_EMBEDDING_DIMENSION="1024"
 QWEN_EMBEDDING_TIMEOUT="120"
 QWEN_EMBEDDING_ATTEMPTS="2"
+QWEN_RERANK_MODEL="qwen3-rerank"
+QWEN_RERANK_ENDPOINT="https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+QWEN_RERANK_TIMEOUT="60"
+QWEN_RERANK_ATTEMPTS="2"
 DASHSCOPE_COMPAT_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 DASHSCOPE_API_BASE_URL="https://dashscope.aliyuncs.com/api/v1"
 QWEN_IMAGE_SIZE="2048*2048"
@@ -255,6 +281,9 @@ KNOWLEDGE_MAX_DOCUMENT_IMAGES="6"
 KNOWLEDGE_MAX_DOCUMENT_PAGES="300"
 KNOWLEDGE_MAX_TEXT_CHARACTERS="500000"
 KNOWLEDGE_EMBEDDING_WORKERS="3"
+KNOWLEDGE_RECALL_LIMIT="20"
+KNOWLEDGE_RERANK_TOP_N="3"
+KNOWLEDGE_RERANK_MIN_SCORE="0.55"
 ```
 
 只启动 Redis（需要 Docker Desktop）：
@@ -294,7 +323,7 @@ MySQL + Redis + Qdrant + 本地日志
 - 为 MySQL 配置主从复制、备份和连接池监控。
 - 上传文件和生成图片接入 OSS/COS/S3。
 - 使用 Redis Sentinel 或 Cluster 提高图片缓存可用性。
-- 生图和图片编辑改成异步任务队列。
+- 将进程内海报任务管理器替换为 Redis/Celery 等持久化异步队列。
 - 增加用户系统、作品库、调用次数统计和成本统计。
 
 ## 项目边界
@@ -302,7 +331,7 @@ MySQL + Redis + Qdrant + 本地日志
 - 当前没有用户登录系统，会话通过本地 `conversation_id` 区分。
 - 当前没有对象存储，图片缓存在 Redis，并受 `REDIS_IMAGE_TTL_SECONDS` 控制。
 - 聊天框上传的参考资料只服务于本次生成；长期资料通过 `/api/knowledge/upload` 单独入库。
-- 当前没有异步队列，长耗时生图请求仍是同步等待。
+- 当前使用进程内任务管理器，服务重启后未完成任务不会恢复；生产环境可替换为 Redis/Celery 等持久化队列。
 - 图片批量编辑需要用户明确指定单张图片，避免系统误选。
 
 ## 可扩展方向

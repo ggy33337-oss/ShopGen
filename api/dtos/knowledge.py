@@ -26,6 +26,8 @@ class KnowledgeMatchDTO(BaseModel):
     page_number: int = 0
     section: str = ""
     score: float
+    vector_score: float = 0.0
+    rerank_score: float = 0.0
 
 
 class KnowledgeUploadResponse(BaseModel):

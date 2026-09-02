@@ -38,8 +38,10 @@ class ImageTaskState:
     conversation_id: str
     history_messages: list[dict[str, str]] = field(default_factory=list)
     visual_history: list[dict[str, Any]] = field(default_factory=list)
+    edit_session: dict[str, Any] = field(default_factory=dict)
     uploaded_content: Any = None
     force_image: bool = False
+    image_model: str = ""
     poster_context: dict[str, str] = field(default_factory=dict)
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     intent: str = ""
@@ -62,3 +64,5 @@ class OrchestrationResult:
     copywriting: Copywriting = field(default_factory=Copywriting)
     task_id: str = ""
     actions: tuple[dict[str, Any], ...] = ()
+    root_reference_url: str = ""
+    edit_revision: int = 0

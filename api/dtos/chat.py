@@ -9,6 +9,7 @@ MAX_MESSAGE_LENGTH = 1000
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=MAX_MESSAGE_LENGTH)
     conversation_id: str = Field(default="default", max_length=64)
+    image_model: str = Field(default="", max_length=80)
 
     @field_validator("message")
     @classmethod
@@ -24,6 +25,16 @@ class ChatRequest(BaseModel):
         value = str(value or "default").strip()
         if not value:
             return "default"
+        return value
+
+    @field_validator("image_model")
+    @classmethod
+    def normalize_image_model(cls, value):
+        value = str(value or "").strip()
+        if not value or value.lower() == "auto":
+            return ""
+        if not value.lower().startswith(("qwen", "wan", "wanx", "gpt-image")):
+            raise ValueError("图片模型必须使用千问、Wanx 或 GPT Image 模型")
         return value
 
 

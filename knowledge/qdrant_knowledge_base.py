@@ -7,15 +7,20 @@ from qdrant_client import QdrantClient, models
 
 from core.config import read_config
 from knowledge.models import KnowledgeContext, KnowledgeImageRecord
+from knowledge.quality import is_meaningful_knowledge_text
 from llm.qwen_retrieval import QwenRetrievalGateway
+from llm.qwen_reranker import QwenReranker
 
 
 DEFAULT_TEXT_COLLECTION = "ecommerce_kb_text"
 DEFAULT_IMAGE_COLLECTION = "ecommerce_kb_image"
+DEFAULT_RECALL_LIMIT = 20
+DEFAULT_RERANK_TOP_N = 3
+DEFAULT_RERANK_MIN_SCORE = 0.55
 
 
 class QdrantKnowledgeBase:
-    def __init__(self, values=None, client=None, retrieval_gateway=None):
+    def __init__(self, values=None, client=None, retrieval_gateway=None, reranker=None):
         self.values = values or read_config(".env")
         self.client = client or QdrantClient(
             url=str(self.values.get("QDRANT_URL") or "http://127.0.0.1:6333").rstrip("/"),
@@ -25,6 +30,7 @@ class QdrantKnowledgeBase:
             check_compatibility=False,
         )
         self.retrieval_gateway = retrieval_gateway
+        self.reranker = reranker
         self.dimension = int(self.values.get("QWEN_EMBEDDING_DIMENSION") or 1024)
         self.text_collection = str(
             self.values.get("QDRANT_TEXT_COLLECTION") or DEFAULT_TEXT_COLLECTION
@@ -36,6 +42,16 @@ class QdrantKnowledgeBase:
             max(int(self.values.get("KNOWLEDGE_EMBEDDING_WORKERS") or 3), 1),
             8,
         )
+        self.recall_limit = max(int(self.values.get("KNOWLEDGE_RECALL_LIMIT") or DEFAULT_RECALL_LIMIT), 1)
+        self.rerank_top_n = min(
+            max(int(self.values.get("KNOWLEDGE_RERANK_TOP_N") or DEFAULT_RERANK_TOP_N), 1),
+            self.recall_limit,
+        )
+        self.rerank_min_score = float(
+            self.values.get("KNOWLEDGE_RERANK_MIN_SCORE") or DEFAULT_RERANK_MIN_SCORE
+        )
+        if not 0.0 <= self.rerank_min_score <= 1.0:
+            raise ValueError("KNOWLEDGE_RERANK_MIN_SCORE 必须在 0 到 1 之间。")
 
     def ensure_collections(self):
         for collection_name in (self.text_collection, self.image_collection):
@@ -135,11 +151,33 @@ class QdrantKnowledgeBase:
         )
 
     def search_matches(self, query, limit=5, category=""):
+        candidate_limit = max(self.recall_limit, self.rerank_top_n, int(limit))
+        candidates = self.retrieve_candidates(query, limit=candidate_limit, category=category)
+        candidates = [
+            item
+            for item in candidates
+            if is_meaningful_knowledge_text(item.get("content"), item.get("title"))
+        ]
+        if not candidates:
+            return []
+        reranked = self._get_reranker().rerank(
+            query,
+            candidates,
+            top_n=min(self.rerank_top_n, len(candidates)),
+        )
+        accepted = [
+            item
+            for item in reranked
+            if float(item.get("rerank_score") or 0.0) >= self.rerank_min_score
+        ]
+        return accepted[: min(max(int(limit), 1), self.rerank_top_n)]
+
+    def retrieve_candidates(self, query, limit=DEFAULT_RECALL_LIMIT, category=""):
         self.ensure_collections()
         query_vector = self._get_retrieval_gateway().embed_text(query)
         query_filter = build_category_filter(category)
         candidates = []
-        candidate_limit = max(int(limit) * 3, 6)
+        candidate_limit = max(int(limit), 1)
         for collection_name in (self.text_collection, self.image_collection):
             response = self.client.query_points(
                 collection_name=collection_name,
@@ -230,6 +268,11 @@ class QdrantKnowledgeBase:
             self.retrieval_gateway = QwenRetrievalGateway(self.values)
             self.dimension = self.retrieval_gateway.dimension
         return self.retrieval_gateway
+
+    def _get_reranker(self):
+        if self.reranker is None:
+            self.reranker = QwenReranker(self.values)
+        return self.reranker
 
     def _build_text_points(self, chunks):
         if not chunks:

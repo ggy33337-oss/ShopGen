@@ -65,10 +65,13 @@ class FakeRedis:
 class MySqlSchemaTests(unittest.TestCase):
     def test_tables_use_utf8mb4_unicode_ci(self):
         ddl = "\n".join(SCHEMA_STATEMENTS)
-        self.assertEqual(3, len(SCHEMA_STATEMENTS))
-        self.assertEqual(3, ddl.count("DEFAULT CHARSET=utf8mb4"))
-        self.assertEqual(3, ddl.count("COLLATE=utf8mb4_unicode_ci"))
+        self.assertEqual(4, len(SCHEMA_STATEMENTS))
+        self.assertEqual(4, ddl.count("DEFAULT CHARSET=utf8mb4"))
+        self.assertEqual(4, ddl.count("COLLATE=utf8mb4_unicode_ci"))
         self.assertIn("FOREIGN KEY (conversation_id)", ddl)
+        self.assertIn("visual_edit_sessions", ddl)
+        self.assertIn("root_image_url TEXT NOT NULL", ddl)
+        self.assertIn("revision INT UNSIGNED NOT NULL", ddl)
 
     def test_database_url_requires_aiomysql_driver(self):
         url = get_database_url(

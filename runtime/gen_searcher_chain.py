@@ -115,6 +115,20 @@ class GenSearcherImageChain:
             )
         except OSError:
             pass
+        # Generic subjects need no real-world grounding; use the image model
+        # directly and avoid unnecessary search/download/reference review.
+        if _is_generic_image_task(user_input):
+            prompt = _clean_prompt(str(user_input or "").strip()) or "生成一张高质量图片"
+            write_generation_event("chain_three.direct_generate", "started", reference_count=0)
+            try:
+                generated_url = gateway.generate_image(prompt=prompt, reference_images=[])
+                if not str(generated_url or "").strip():
+                    raise RuntimeError("图片模型未返回图片 URL。")
+            except Exception as exc:
+                return ChainThreeResult(reply_text="图片生成失败，请稍后重试。", status="failed", image_prompt=prompt, error=str(exc).strip()[:1000])
+            write_generation_event("chain_three.direct_generate", "completed", reference_count=0)
+            return ChainThreeResult(reply_text="已根据您的描述直接生成图片，请参考附件。", status="completed", generated_url=str(generated_url).strip(), image_prompt=prompt, references=(), tool_calls=0)
+
         if gateway is None or not callable(getattr(gateway, "chat_completion", None)):
             return self._fallback(
                 user_input,
@@ -407,7 +421,7 @@ class GenSearcherImageChain:
             "\"required\":true,\"query\":\"...\",\"search_layer\":1,\"reason\":\"...\"}],"
             "\"copywriting\":{\"headline\":\"\",\"subheadline\":\"\",\"cta\":\"\"},"
             "\"reply_text\":\"...\",\"selection_reason\":\"...\"}\n"
-            "必须至少调用一次 image_search；避免重复查询。gen_prompt 不得包含 URL 或 IMG 编号，"
+            "仅当任务确实需要真实世界视觉依据时调用 image_search；通用主体可直接返回 final 且不调用工具。避免重复查询。gen_prompt 不得包含 URL 或 IMG 编号，"
             "需要引用图片时使用“第一张参考图/第二张参考图”等序数。\n"
             "先判断生成图片真正需要哪些视觉事实，再按视觉层级检索；不要套用固定模板，也不要默认必须检索 Logo。"
             "对真实学校、品牌、地点等主体，通常可考虑 identity（Logo/校徽/标识）、"
@@ -864,6 +878,28 @@ def _extract_entity_hint(value):
     candidate = max(candidates, key=len)
     candidate = re.sub(r"^(?:请|帮我|生成|设计|制作|做|为|给我|一张|一幅)+", "", candidate)
     return candidate.strip()
+
+
+def _is_generic_image_task(value):
+    """Return True when the request is a self-contained, non-factual subject.
+
+    Such requests (e.g. a skateboard, chair, fruit or icon) benefit from the
+    image model's native synthesis and should not trigger web grounding.
+    Requests naming institutions, brands, places, people, products with a
+    specific model, or an explicit real scene remain search-grounded.
+    """
+    text = str(value or "").strip()
+    if not text or _extract_entity_hint(text):
+        return False
+    factual_markers = (
+        "校徽", "学校", "大学", "学院", "品牌", "logo", "商标", "官网",
+        "校园", "建筑", "景点", "地点", "街景", "真实", "实拍", "照片",
+        "人物", "名人", "产品型号", "型号", "店铺", "门店",
+    )
+    if any(marker.casefold() in text.casefold() for marker in factual_markers):
+        return False
+    # Explicitly requested visual generation/editing of a simple subject.
+    return any(token in text for token in ("生成", "画", "绘制", "制作", "设计", "图片", "图像"))
 
 
 def _normalized_entity_text(value):

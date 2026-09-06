@@ -164,6 +164,10 @@ class QwenGateway:
             values.get("OPENAI_IMAGE_ENDPOINT")
             or f"{self.openai_image_base_url}/images/edits"
         ).strip()
+        self.openai_image_generation_endpoint = str(
+            values.get("OPENAI_IMAGE_GENERATION_ENDPOINT")
+            or f"{self.openai_image_base_url}/images/generations"
+        ).strip()
         self.image_total_timeout = max(
             1,
             int(values.get("QWEN_IMAGE_TOTAL_TIMEOUT") or DEFAULT_IMAGE_TOTAL_TIMEOUT),
@@ -384,13 +388,33 @@ class QwenGateway:
                 timeout_seconds=self.image_total_timeout,
                 max_attempts=MAX_IMAGE_ATTEMPTS,
             ):
-                response = self._post_json(
-                    endpoint,
-                    payload,
-                    timeout=IMAGE_REQUEST_TIMEOUT,
-                    error_label="千问图片模型",
-                    attempts=MAX_IMAGE_ATTEMPTS,
-                )
+                try:
+                    response = self._post_json(
+                        endpoint,
+                        payload,
+                        timeout=IMAGE_REQUEST_TIMEOUT,
+                        error_label="千问图片模型",
+                        attempts=MAX_IMAGE_ATTEMPTS,
+                    )
+                except RuntimeError as exc:
+                    fallback = f"{DEFAULT_API_BASE_URL}/services/aigc/multimodal-generation/generation"
+                    if not self._should_fallback(endpoint, fallback, exc):
+                        raise
+                    write_generation_event(
+                        "model.endpoint_fallback",
+                        "scheduled",
+                        operation="千问图片模型",
+                        from_endpoint=self._safe_endpoint(endpoint),
+                        to_endpoint=self._safe_endpoint(fallback),
+                        reason=str(exc)[:500],
+                    )
+                    response = self._post_json(
+                        fallback,
+                        payload,
+                        timeout=IMAGE_REQUEST_TIMEOUT,
+                        error_label="千问图片模型",
+                        attempts=MAX_IMAGE_ATTEMPTS,
+                    )
                 image_url = self.extract_image_url(response)
                 if not image_url:
                     code = str(response.get("code") or "").strip()
@@ -400,12 +424,12 @@ class QwenGateway:
         return image_url
 
     def _generate_openai_image(self, prompt, reference_images):
+        if not reference_images:
+            return self._generate_openai_image_from_prompt(prompt)
         if not self.openai_image_api_key:
             raise RuntimeError(
                 "已选择 GPT Image，但缺少 OPENAI_IMAGE_API_KEY 配置。"
             )
-        if not reference_images:
-            raise RuntimeError("GPT Image 当前编辑链必须提供参考图片。")
 
         boundary = f"----codex-{uuid.uuid4().hex}"
         body = bytearray()
@@ -452,6 +476,44 @@ class QwenGateway:
         if not image_url:
             detail = str(payload.get("error", {}).get("message") or "响应中没有图片 URL").strip()
             raise RuntimeError(f"GPT Image 生成失败：{detail}")
+        return image_url
+
+    def _generate_openai_image_from_prompt(self, prompt):
+        """Call the generations endpoint for text-to-image requests."""
+        if not self.openai_image_api_key:
+            raise RuntimeError("GPT Image 缺少 OPENAI_IMAGE_API_KEY 配置。")
+        body = json.dumps(
+            {"model": self.image_model, "prompt": prompt, "n": 1},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        req = request.Request(
+            self.openai_image_generation_endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.openai_image_api_key}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            method="POST",
+        )
+        try:
+            with open_model_request(self.values, req, self.image_total_timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"GPT Image generation API request failed: "
+                f"HTTP {exc.code} {response_body[:500]}"
+            ) from exc
+        except (error.URLError, TimeoutError, socket.timeout, ConnectionResetError) as exc:
+            raise RuntimeError("GPT Image generation API timed out or disconnected.") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GPT Image generation API returned invalid JSON.") from exc
+        image_url = self._extract_openai_image_url(payload)
+        if not image_url:
+            detail = str(
+                payload.get("error", {}).get("message") or "response has no image URL"
+            ).strip()
+            raise RuntimeError(f"GPT Image generation failed: {detail}")
         return image_url
 
     @staticmethod
@@ -530,13 +592,34 @@ class QwenGateway:
         }
         if response_format:
             payload["response_format"] = response_format
-        return self._post_json(
-            f"{self.compat_base_url}/chat/completions",
-            payload,
-            timeout=timeout,
-            error_label=error_label,
-            attempts=attempts,
-        )
+        endpoint = f"{self.compat_base_url}/chat/completions"
+        try:
+            return self._post_json(
+                endpoint,
+                payload,
+                timeout=timeout,
+                error_label=error_label,
+                attempts=attempts,
+            )
+        except RuntimeError as exc:
+            fallback = f"{DEFAULT_COMPAT_BASE_URL}/chat/completions"
+            if not self._should_fallback(endpoint, fallback, exc):
+                raise
+            write_generation_event(
+                "model.endpoint_fallback",
+                "scheduled",
+                operation=error_label,
+                from_endpoint=self._safe_endpoint(endpoint),
+                to_endpoint=self._safe_endpoint(fallback),
+                reason=str(exc)[:500],
+            )
+            return self._post_json(
+                fallback,
+                payload,
+                timeout=timeout,
+                error_label=error_label,
+                attempts=attempts,
+            )
 
     def _post_json(self, endpoint, payload, timeout, error_label, attempts=1):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -717,6 +800,27 @@ class QwenGateway:
                 break
             time.sleep(min(2, max(0, remaining_after_failure))) if remaining_after_failure is not None else time.sleep(2)
         raise last_error
+
+    def _should_fallback(self, endpoint, fallback, exc):
+        """Retry transient gateway failures against the public DashScope endpoint."""
+        if self._safe_endpoint(endpoint) == self._safe_endpoint(fallback):
+            return False
+        setting = str(self.values.get("DASHSCOPE_ENDPOINT_FALLBACK", "true") or "").strip().lower()
+        if setting in {"0", "false", "no", "off"}:
+            return False
+        message = str(exc or "").lower()
+        return any(
+            marker in message
+            for marker in (
+                "超时",
+                "连接中断",
+                "connection refused",
+                "connection reset",
+                "timed out",
+                "urlopen error",
+                "dns",
+            )
+        )
 
     @staticmethod
     def _can_retry(retryable, attempt, attempts, deadline):

@@ -90,6 +90,29 @@ class OrchestratorRoutingTests(unittest.TestCase):
         self.assertEqual("千问文字回复", result.reply_text)
         self.assertEqual("", result.image_url)
 
+    def test_image_keyword_fallback_routes_misclassified_request_to_image_chain(self):
+        gateway = FakeGateway(IntentDecision(intent="text", is_clear=False))
+        state = ImageTaskState(user_input="请生成清华大学招生海报图片", conversation_id="test")
+
+        result = ImageGenerationOrchestrator(
+            {}, gateway=gateway, knowledge_base=FakeKnowledgeBase(), image_cache=FakeImageCache()
+        ).run(state)
+
+        self.assertEqual(ROUTE_CHAIN_THREE, result.route)
+        self.assertIn(result.status, {"completed", "placeholder"})
+        self.assertEqual("image", state.intent)
+        self.assertEqual("intent_keyword_fallback", state.actions[0]["action"])
+
+    def test_text_generation_request_is_not_forced_by_generic_generation_word(self):
+        gateway = FakeGateway(IntentDecision(intent="text"))
+        state = ImageTaskState(user_input="生成一句招生文案", conversation_id="test")
+
+        result = ImageGenerationOrchestrator(
+            {}, gateway=gateway, knowledge_base=FakeKnowledgeBase(), image_cache=FakeImageCache()
+        ).run(state)
+
+        self.assertEqual(ROUTE_TEXT, result.route)
+
     def test_request_image_model_overrides_gateway_default(self):
         gateway = FakeGateway(IntentDecision(intent="text"))
         state = ImageTaskState(
@@ -163,23 +186,19 @@ class OrchestratorRoutingTests(unittest.TestCase):
         ).run(state)
 
         self.assertEqual(ROUTE_CHAIN_ONE, result.route)
-        self.assertEqual([REFERENCE_DATA_URL], gateway.generated_references)
+        self.assertEqual([HISTORY_DATA_URL], gateway.generated_references)
         self.assertEqual(
-            [HISTORY_DATA_URL, REFERENCE_DATA_URL],
+            [HISTORY_DATA_URL],
             gateway.planned_requests[0]["reference_images"],
         )
         self.assertIn(
-            "参考图1是第一次生成结果，仅用于识别本轮需要优化的方向和范围",
+            "参考图来自当前会话窗口最近一次成功生成的图片",
             gateway.planned_requests[0]["context"],
         )
-        self.assertIn(
-            "最终生图模型只能以根参考图为唯一基准",
-            gateway.planned_requests[0]["context"],
-        )
-        self.assertEqual(2, result.edit_revision)
-        self.assertEqual(REFERENCE_DATA_URL, result.root_reference_url)
+        self.assertEqual(0, result.edit_revision)
+        self.assertEqual("", result.root_reference_url)
 
-    def test_third_edit_requires_reupload_without_planning_or_generation(self):
+    def test_history_edit_ignores_legacy_revision_limit(self):
         gateway = FakeGateway(IntentDecision(intent="image", use_previous_image=True))
         state = ImageTaskState(
             user_input="再把主体颜色调亮一点",
@@ -197,13 +216,11 @@ class OrchestratorRoutingTests(unittest.TestCase):
         ).run(state)
 
         self.assertEqual(ROUTE_CHAIN_ONE, result.route)
-        self.assertEqual("requires_reupload", result.status)
-        self.assertEqual(REUPLOAD_REQUIRED_MESSAGE, result.reply_text)
-        self.assertEqual([], gateway.planned_requests)
-        self.assertEqual([], gateway.generated_references)
-        self.assertEqual("generation_refused", result.actions[-1]["action"])
+        self.assertEqual("completed", result.status)
+        self.assertEqual([HISTORY_DATA_URL], gateway.generated_references)
+        self.assertEqual([HISTORY_DATA_URL], gateway.planned_requests[0]["reference_images"])
 
-    def test_history_edit_without_root_reference_requires_reupload(self):
+    def test_history_edit_without_root_reference_uses_latest_history_image(self):
         gateway = FakeGateway(IntentDecision(intent="image", use_previous_image=True))
         state = ImageTaskState(
             user_input="继续修改上一张图",
@@ -215,10 +232,9 @@ class OrchestratorRoutingTests(unittest.TestCase):
             {}, gateway=gateway, image_cache=FakeImageCache()
         ).run(state)
 
-        self.assertEqual("requires_reupload", result.status)
-        self.assertEqual(REUPLOAD_REQUIRED_MESSAGE, result.reply_text)
-        self.assertEqual([], gateway.planned_requests)
-        self.assertEqual([], gateway.generated_references)
+        self.assertEqual("completed", result.status)
+        self.assertEqual([HISTORY_DATA_URL], gateway.generated_references)
+        self.assertEqual([HISTORY_DATA_URL], gateway.planned_requests[0]["reference_images"])
 
     def test_uploaded_image_uses_chain_two_and_retrieved_knowledge(self):
         gateway = FakeGateway(IntentDecision(intent="mixed", use_previous_image=False))
@@ -248,21 +264,24 @@ class OrchestratorRoutingTests(unittest.TestCase):
         self.assertIn("商品说明", result.image_prompt)
         self.assertIn("主色为海洋蓝", result.image_prompt)
 
-    def test_no_image_uses_chain_three_placeholder_without_generation(self):
+    def test_generic_image_skips_knowledge_and_generates_without_reference(self):
         gateway = FakeGateway(IntentDecision(intent="image", use_previous_image=False))
-        state = ImageTaskState(user_input="生成一张新品海报", conversation_id="test")
+        knowledge_base = FakeKnowledgeBase()
+        state = ImageTaskState(user_input="生成一个滑板", conversation_id="test")
 
         result = ImageGenerationOrchestrator(
             {},
             gateway=gateway,
-            knowledge_base=FakeKnowledgeBase(),
+            knowledge_base=knowledge_base,
             image_cache=FakeImageCache(),
         ).run(state)
 
         self.assertEqual(ROUTE_CHAIN_THREE, result.route)
-        self.assertEqual("placeholder", result.status)
-        self.assertEqual("matched", result.knowledge_status)
-        self.assertEqual("", result.image_url)
+        self.assertEqual("completed", result.status)
+        self.assertEqual("not_needed", result.knowledge_status)
+        self.assertEqual([], knowledge_base.queries)
+        self.assertTrue(result.image_url)
+        self.assertEqual("生成一个滑板", result.image_prompt)
         self.assertEqual([], gateway.generated_references)
 
     def test_unclear_text_request_returns_clarification_without_generation(self):

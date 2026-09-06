@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -28,7 +29,39 @@ class CapturingQwenGateway(QwenGateway):
         }
 
 
+class FailingEndpointGateway(QwenGateway):
+    def __init__(self):
+        super().__init__({
+            "DASHSCOPE_API_KEY": "test-key",
+            "DASHSCOPE_COMPAT_BASE_URL": "https://private.example/v1",
+        })
+        self.endpoints = []
+
+    def _post_json(self, endpoint, payload, timeout, error_label, attempts=1):
+        self.endpoints.append(endpoint)
+        if len(self.endpoints) == 1:
+            raise RuntimeError(f"{error_label}响应超时或连接中断。")
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+
 class QwenImagePayloadTests(unittest.TestCase):
+    def test_chat_completion_falls_back_from_unavailable_custom_endpoint(self):
+        gateway = FailingEndpointGateway()
+
+        response = gateway.chat_completion(
+            [{"role": "user", "content": "你好"}],
+            model="qwen3.8-max",
+            temperature=0,
+            max_tokens=20,
+        )
+
+        self.assertEqual("ok", response["choices"][0]["message"]["content"])
+        self.assertEqual("https://private.example/v1/chat/completions", gateway.endpoints[0])
+        self.assertEqual(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            gateway.endpoints[1],
+        )
+
     def test_intent_classifier_parses_layer_tool_and_clarity_fields(self):
         gateway = QwenGateway({"DASHSCOPE_API_KEY": "test-key"})
         gateway.chat_completion = lambda *args, **kwargs: {
@@ -115,6 +148,40 @@ class QwenImagePayloadTests(unittest.TestCase):
         self.assertIn(b"name=\"model\"", req.data)
         self.assertIn(b"gpt-image-2", req.data)
         self.assertIn(b"name=\"image\"", req.data)
+
+    def test_gpt_image_generation_uses_generations_endpoint_without_reference(self):
+        gateway = QwenGateway(
+            {
+                "DASHSCOPE_API_KEY": "test-key",
+                "QWEN_IMAGE_MODEL": "gpt-image-2",
+                "OPENAI_IMAGE_API_KEY": "openai-test-key",
+                "OPENAI_IMAGE_BASE_URL": "https://api.example.com/v1",
+            }
+        )
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"data":[{"b64_json":"aW1hZ2U="}]}'
+
+        with patch("llm.qwen_client.open_model_request", return_value=FakeResponse()) as open_request:
+            image_url = gateway.generate_image("生成一个滑板", [])
+
+        self.assertEqual("data:image/png;base64,aW1hZ2U=", image_url)
+        req = open_request.call_args.args[1]
+        self.assertEqual("https://api.example.com/v1/images/generations", req.full_url)
+        self.assertEqual(
+            {"model": "gpt-image-2", "prompt": "生成一个滑板", "n": 1},
+            json.loads(req.data.decode("utf-8")),
+        )
+        self.assertEqual("Bearer openai-test-key", req.get_header("Authorization"))
 
     def test_non_qwen_model_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "必须使用千问模型"):

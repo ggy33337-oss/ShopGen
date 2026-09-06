@@ -18,7 +18,7 @@ from runtime.models import (
     ROUTE_CHAIN_TWO,
     ROUTE_TEXT,
 )
-from runtime.gen_searcher_chain import GenSearcherImageChain
+from runtime.gen_searcher_chain import GenSearcherImageChain, _is_generic_image_task
 from services.visual_reference_loader import (
     load_reference_image,
     prepare_visual_planner_image,
@@ -29,6 +29,24 @@ MAX_QWEN_REFERENCE_IMAGES = 3
 MAX_EDIT_REVISION = 2
 CLARIFICATION_REQUIRED_MESSAGE = "请明确具体的生图任务。"
 REUPLOAD_REQUIRED_MESSAGE = "请重新上传参考图片并仔细规划提示词。"
+# 应用层兜底词：模型意图结果不稳定时，明确的生图表达仍应进入图片链路。
+# 刻意不包含“生成”单字，避免“生成一句文案”等纯文本请求被误路由。
+IMAGE_INTENT_KEYWORDS = (
+    "生图",
+    "出图",
+    "生成图片",
+    "生成图",
+    "生成海报",
+    "制作海报",
+    "设计海报",
+    "海报图片",
+    "配图",
+    "画一张",
+    "绘制图片",
+    "绘制一张",
+    "做一张图",
+    "做图",
+)
 
 
 class ImageGenerationOrchestrator:
@@ -93,6 +111,7 @@ class ImageGenerationOrchestrator:
                     has_uploaded_image=bool(self._uploaded_images(state)),
                     force_image=state.force_image,
                 )
+            decision = self._apply_image_keyword_fallback(state, decision)
             state.intent = decision.intent
             state.record(
                 "intent_decided",
@@ -132,6 +151,30 @@ class ImageGenerationOrchestrator:
             with generation_log_context(route=state.route):
                 return selected_runner(state)
 
+    @staticmethod
+    def _apply_image_keyword_fallback(state, decision):
+        """在模型误判/不明确时，用明确生图关键词兜底到图片链路。"""
+        user_input = str(state.user_input or "").strip().casefold()
+        matched = next(
+            (keyword for keyword in IMAGE_INTENT_KEYWORDS if keyword.casefold() in user_input),
+            "",
+        )
+        if not matched or state.force_image or decision.intent in {"image", "mixed"}:
+            return decision
+        state.record(
+            "intent_keyword_fallback",
+            keyword=matched,
+            previous_intent=decision.intent,
+            reason="命中生图关键词，兜底进入图片链路",
+        )
+        return decision.__class__(
+            intent="image",
+            use_previous_image=decision.use_previous_image,
+            needs_tool=decision.needs_tool,
+            is_clear=True,
+            reason=f"关键词兜底：{matched}",
+        )
+
     def _run_text(self, state):
         messages = build_message(
             state.user_input,
@@ -153,41 +196,28 @@ class ImageGenerationOrchestrator:
 
     def _run_chain_one(self, state):
         selected = self._select_history_image(state.visual_history)
-        edit_session = dict(state.edit_session or {})
-        revision = self._edit_revision(edit_session)
-        root_image_url = str(edit_session.get("root_image_url") or "").strip()
-        latest_result_url = str(
-            edit_session.get("latest_result_url") or selected.get("image_url") or ""
-        ).strip()
-        if revision >= MAX_EDIT_REVISION:
-            return self._requires_reupload(state, revision, "edit_revision_limit")
-        if revision != 1 or not root_image_url:
-            return self._requires_reupload(state, revision, "missing_root_reference")
+        latest_image_url = str(selected.get("image_url") or "").strip()
+        if not latest_image_url:
+            return self._requires_reupload(state, 0, "history_image_unavailable")
 
-        with generation_stage(
-            "reference_image.load",
-            reference_source="root_and_previous_result",
-            edit_revision=revision,
-        ):
-            root_reference = load_reference_image(self.values, root_image_url)
-            previous_result = load_reference_image(self.values, latest_result_url)
-        if not root_reference:
-            return self._requires_reupload(state, revision, "root_reference_unavailable")
+        # The first-layer history route edits the latest image visible in the
+        # current conversation. It is both the planning reference and the image
+        # sent to the generator, so the existing root-image/edit-session scheme
+        # is intentionally replaced for this route.
+        with generation_stage("reference_image.load", reference_source="latest_history_image"):
+            latest_reference = load_reference_image(self.values, latest_image_url)
+        if not latest_reference:
+            return self._requires_reupload(state, 0, "history_image_unavailable")
 
-        root_data_url = self._reference_to_data_url(root_reference)
-        previous_data_url = ""
-        if previous_result:
-            previous_data_url = self._reference_to_data_url(previous_result)
-        # The previous result informs the planner; the root image remains the only
-        # image sent to the final generator so unrelated edits are not compounded.
-        planning_references = (
-            [previous_data_url, root_data_url]
-            if previous_data_url
-            else [root_data_url]
+        latest_data_url = self._reference_to_data_url(latest_reference)
+        planning_references = self._prepare_planner_references([latest_data_url])
+        context = (
+            "【当前会话最近生成图片｜唯一参考图】\n"
+            "参考图来自当前会话窗口最近一次成功生成的图片。\n"
+            "本轮只修改用户明确提出的内容，未要求修改的主体、构图、文字、材质、光线和其他细节保持不变。\n\n"
+            f"【最近一次生成信息】\n{self._build_history_context(selected)}"
         )
-        planning_references = self._prepare_planner_references(planning_references)
-        context = self._build_correction_context(selected, revision, bool(previous_result))
-        with generation_stage("image_prompt.plan", reference_source="history"):
+        with generation_stage("image_prompt.plan", reference_source="latest_history_image"):
             plan = self.gateway.plan_image_task(
                 user_input=state.user_input,
                 reference_images=planning_references,
@@ -196,18 +226,13 @@ class ImageGenerationOrchestrator:
             )
         state.record(
             "image_prompt_planned",
-            reference_source="previous_result_as_optimization_parameter",
-            generation_base="root_reference_only",
-            edit_revision=revision + 1,
+            reference_source="latest_history_image",
+            generation_base="latest_history_image",
         )
-        with generation_stage(
-            "image.generate",
-            reference_source="root_only",
-            edit_revision=revision + 1,
-        ):
+        with generation_stage("image.generate", reference_source="latest_history_image"):
             generated_url = self.gateway.generate_image(
                 prompt=plan.image_prompt,
-                reference_images=[root_data_url],
+                reference_images=[latest_data_url],
             )
         with generation_stage("image.cache"):
             image_url = self._cache_generated_image(generated_url)
@@ -219,8 +244,6 @@ class ImageGenerationOrchestrator:
             image_url=image_url,
             image_prompt=plan.image_prompt,
             copywriting=plan.copywriting,
-            root_reference_url=root_image_url,
-            edit_revision=revision + 1,
         )
 
     def _run_chain_two(self, state):
@@ -276,8 +299,15 @@ class ImageGenerationOrchestrator:
 
     def _run_chain_three(self, state):
         knowledge_query = self._knowledge_query(state)
-        with generation_stage("knowledge.retrieve", query_chars=len(knowledge_query)):
-            knowledge = self.knowledge_base.search(knowledge_query, limit=1)
+        if _is_generic_image_task(state.user_input):
+            # Native image synthesis does not need factual grounding for a
+            # self-contained subject (for example, "生成一个滑板").
+            from knowledge.models import KnowledgeContext
+
+            knowledge = KnowledgeContext(query=knowledge_query, status="not_needed")
+        else:
+            with generation_stage("knowledge.retrieve", query_chars=len(knowledge_query)):
+                knowledge = self.knowledge_base.search(knowledge_query, limit=1)
         state.knowledge_status = knowledge.status
         state.record(
             "knowledge_searched",

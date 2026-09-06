@@ -2,24 +2,22 @@
 
 > 一个面向电商运营的 AI 图文生成工作台：输入商品需求、参考图片或业务资料，系统自动完成意图识别、知识检索、视觉规划、图片生成和多轮修改。
 
-## 面试速览
+## 项目说明
 
-| 项目 | 说明 |
-| --- | --- |
 | 解决的问题 | 将“写文案、找参考、做海报、反复改图”串成一条可追踪的业务流程，减少多工具切换和上下文丢失。 |
 | 我的工程重点 | 设计统一编排器、三链路路由、会话级视觉记忆、RAG 检索质量控制和模型故障可诊断机制。 |
 | 核心技术 | FastAPI、原生 JavaScript、MySQL、Redis、Qdrant、Qwen 多模态模型、GPT Image 兼容接口。 |
 | 可演示能力 | 普通聊天、图文生成、历史图编辑、上传参考图海报生成、PDF/DOCX 资料解析、知识库检索。 |
 | 当前验证 | `pytest` 全量测试通过（59 项）；模型请求、重试、超时、路由和缓存均写入结构化 JSONL 日志。 |
 
-### 3 分钟演示路径
+### 演示路径
 
 1. 输入“生成一张清华大学招生海报”，展示意图识别和无参考图的检索增强生图链路。
 2. 上传商品图或 PDF/DOCX 资料，展示链路二如何同时使用参考图和知识库上下文。
 3. 对刚生成的图片说“保留主体，换成蓝色背景”，展示 `visual_history` 如何支持连续编辑。
 4. 打开 `GET /api/generation-logs/{task_id}`，展示一次任务的路由、检索、模型请求、重试和失败原因。
 
-### 一句话架构
+### 架构
 
 ```text
 浏览器 → FastAPI → services 适配层 → runtime/orchestrator 统一编排
@@ -29,25 +27,22 @@
                          MySQL 会话 ｜ Redis 图片 ｜ Qdrant 向量 ｜ JSONL 轨迹
 ```
 
+效果展示：查看[效果图展示文档](./效果图展示.md)，包含项目生成结果截图。
+
 ## 项目亮点
 
 - 单一编排核心：`runtime/orchestrator.py` 统一负责意图判断、链路路由、模型调用和状态轨迹。
 - 会话级记忆：使用 MySQL 持久化会话、消息和绘画历史，使用 Redis 保存图片二进制。
 - 三链路路由：历史图修改走链路一，本轮上传图走链路二，无图新请求进入图片检索增强链路三。
 - 文本与意图使用 `qwen3.8-max`，视觉规划使用 `qwen3-vl-plus`，图片生成与编辑支持 `qwen-image-3.0` 和 GPT Image。
-- 向量知识库：文档先清理低信息内容并按完整语义边界分块，使用 `qwen3-vl-embedding` 向量化写入 Qdrant；查询时召回 Top 20，再由 `qwen3-rerank` 重排、阈值过滤并最多保留 3 条。
+- 向量知识库：文档先清理低信息内容并按完整语义边界分块，使用 `qwen3-vl-embedding` 向量化写入 Qdrant；查询时召回 Top 20，再由 `qwen3-rerank` 重排、阈值过滤并保留 1 条。
 - 图片检索增强：无参考图的链路三由当前推理模型自主选择文本搜索、图片搜索和网页浏览，生成带视觉依据的提示词后调用现有生图模型。
 
-## 面试关注点
-
-### 为什么不是“一个 Prompt 调一个模型”
-
-电商生图包含意图判断、参考图理解、商品资料约束、图片生成和连续修改等不同职责。系统将这些职责拆成可观测的阶段，再由一个编排器统一路由，便于替换模型、定位失败和控制上下文边界。
 
 ### 最重要的工程取舍
 
 - **统一编排，入口解耦**：聊天和海报接口只做输入/响应适配，路由与状态机集中在 `runtime/orchestrator.py`，避免两套流程长期漂移。
-- **先召回、再重排、最后阈值过滤**：Qdrant 召回 20 条候选，`qwen3-rerank` 重排后最多保留 3 条；低于 `0.55` 的结果不注入提示词，降低无关资料污染。
+- **先召回、再重排、最后阈值过滤**：Qdrant 召回 20 条候选，`qwen3-rerank` 重排后最多保留 1 条；低于 `0.55` 的结果不注入提示词，降低无关资料污染。
 - **根图与结果图分离**：连续编辑最多允许两次；规划模型可参考结果图定位改动，但图片模型始终以根参考图为基准，减少多轮生成的画面漂移。
 - **失败可解释、接口可恢复**：模型请求记录统一 `task_id` 和阶段信息；超时/断连自动重试，专用网关不可用时可切换公共 DashScope 地址，最终失败明确返回错误。
 
@@ -177,7 +172,7 @@ Qwen Image 3.0 / GPT Image 生成与编辑 → 返回海报文案、图片和链
 
 每次上传新参考图都会创建一条新的图片编辑链并生成第 1 版。系统将最初上传图单独保存为根参考图；用户第一次针对结果提出优化时，视觉规划模型会同时参考第 1 版结果与根参考图，用第 1 版结果定位明确的优化方向和范围，但最终图片模型只以根参考图为生成基准，未明确要求的区域按根图保持。如果用户继续针对第 2 版提出第 3 次修改，系统不再调用图片生成模型，直接返回“请重新上传参考图片并仔细规划提示词。”；重新上传图片后修订次数重置。
 
-知识检索不会再无条件采用向量 Top 1。Qdrant 先召回 20 条候选，系统过滤纯编号、乱码和空信息，`qwen3-rerank` 重排后只保留得分最高的 3 条，再使用 `KNOWLEDGE_RERANK_MIN_SCORE` 拒绝低相关结果。所有候选低于阈值时返回 `no_match`，不向视觉规划提示词注入知识。
+知识检索不会再无条件采用向量 Top 1。Qdrant 先召回 20 条候选，系统过滤纯编号、乱码和空信息，`qwen3-rerank` 重排后只保留得分最高的 1 条，再使用 `KNOWLEDGE_RERANK_MIN_SCORE` 拒绝低相关结果。所有候选低于阈值时返回 `no_match`，不向视觉规划提示词注入知识。
 
 当前默认重排阈值 `0.55` 是使用项目内置的 10 类电商视觉查询、41 条人工标注候选进行初始校准的结果，不是通用常量。运行 `python -m scripts.calibrate_reranker` 可以使用当前模型和固定任务指令重新测量；上线前仍应使用真实业务反馈扩充标注集并重新校准。
 
@@ -291,77 +286,6 @@ python main.py --host 127.0.0.1 --port 8002
 python main.py --cli
 ```
 
-## 环境变量
-
-`.env` 中配置模型接口和密钥。示例：
-
-```env
-DASHSCOPE_API_KEY="your_dashscope_key"
-MODEL_PROXY_URL=""
-QWEN_TEXT_MODEL="qwen3.8-max"
-QWEN_VL_MODEL="qwen3-vl-plus"
-QWEN_IMAGE_MODEL="qwen-image-3.0"
-QWEN_IMAGE_TOTAL_TIMEOUT="420"
-OPENAI_IMAGE_API_KEY="your_openai_compatible_key"
-OPENAI_IMAGE_BASE_URL="https://api.openai.com/v1"
-OPENAI_IMAGE_MODEL="gpt-image-2"
-POSTER_TOTAL_TIMEOUT_SECONDS="480"
-QWEN_EMBEDDING_MODEL="qwen3-vl-embedding"
-QWEN_EMBEDDING_DIMENSION="1024"
-QWEN_EMBEDDING_TIMEOUT="120"
-QWEN_EMBEDDING_ATTEMPTS="2"
-QWEN_RERANK_MODEL="qwen3-rerank"
-QWEN_RERANK_ENDPOINT="https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
-QWEN_RERANK_TIMEOUT="60"
-QWEN_RERANK_ATTEMPTS="2"
-DASHSCOPE_COMPAT_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-DASHSCOPE_API_BASE_URL="https://dashscope.aliyuncs.com/api/v1"
-QWEN_IMAGE_SIZE="2048*2048"
-ASYNC_DATABASE_URL="mysql+aiomysql://user:password@localhost:3306/news_app?charset=utf8mb4"
-MYSQL_ECHO="false"
-MYSQL_POOL_SIZE="10"
-MYSQL_MAX_OVERFLOW="20"
-MYSQL_POOL_RECYCLE="1800"
-MYSQL_POOL_TIMEOUT="30"
-REDIS_HOST="127.0.0.1"
-REDIS_PORT="6379"
-REDIS_DB="0"
-REDIS_PASSWORD=""
-REDIS_IMAGE_TTL_SECONDS="604800"
-REDIS_MAX_IMAGE_BYTES="20971520"
-REDIS_IMAGE_KEY_PREFIX="ecommerce:image"
-QDRANT_URL="http://127.0.0.1:6333"
-QDRANT_TRUST_ENV="false"
-QDRANT_TEXT_COLLECTION="ecommerce_kb_text"
-QDRANT_IMAGE_COLLECTION="ecommerce_kb_image"
-KNOWLEDGE_STORAGE_DIR="data/knowledge"
-KNOWLEDGE_MAX_FILE_MB="100"
-KNOWLEDGE_MAX_DOCUMENT_IMAGES="6"
-KNOWLEDGE_MAX_DOCUMENT_PAGES="300"
-KNOWLEDGE_MAX_TEXT_CHARACTERS="500000"
-KNOWLEDGE_EMBEDDING_WORKERS="3"
-KNOWLEDGE_RECALL_LIMIT="20"
-KNOWLEDGE_RERANK_TOP_N="3"
-KNOWLEDGE_RERANK_MIN_SCORE="0.55"
-```
-
-只启动 Redis（需要 Docker Desktop）：
-
-```powershell
-docker compose -p ecommerce-assistant -f compose.redis.yml up -d
-```
-
-启动 Qdrant（需要 Docker Desktop）：
-
-```powershell
-docker compose -p ecommerce-assistant-rag -f compose.qdrant.yml up -d
-```
-
-安全说明：
-
-- `.env` 不提交 Git。
-- `data/` 和 `logs/` 是本地运行产物。
-- 对外部署时建议使用服务器环境变量或密钥管理服务。
 
 ## 部署建议
 
